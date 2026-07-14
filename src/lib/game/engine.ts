@@ -784,7 +784,7 @@ export class GameEngine {
     rp.targetPosition.set(state.position.x, 0, state.position.z);
     rp.targetRotation.x = state.rotation.x;
     rp.targetRotation.y = state.rotation.y;
-    const head = rp.mesh.children[1];
+    const head = rp.mesh.children[7];
     if (head) head.rotation.x = state.rotation.x;
   }
 
