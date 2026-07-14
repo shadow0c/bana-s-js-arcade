@@ -1,4 +1,5 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
+import { GameCanvas } from '@/components/game/GameCanvas';
 
 export const Route = createFileRoute('/game')({
   component: GameRoute,
@@ -7,5 +8,3 @@ export const Route = createFileRoute('/game')({
 function GameRoute() {
   return <GameCanvas />;
 }
-
-import { GameCanvas } from '@/components/game/GameCanvas';
