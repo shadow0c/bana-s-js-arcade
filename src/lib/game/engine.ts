@@ -585,6 +585,7 @@ export class GameEngine {
     if (!weapon || weapon.reloadTime === 0 || this.state.ammo >= weapon.clipSize) return;
     this.isReloading = true;
     this.reloadEndTime = performance.now() + weapon.reloadTime;
+    gameAudio.reload();
   }
 
   private updateReload(now: number) {
