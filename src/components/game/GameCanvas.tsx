@@ -2,8 +2,9 @@ import { GameEngine } from '@/lib/game/engine';
 import { GameNetwork } from '@/lib/game/network';
 import { WEAPONS, KILL_REWARD } from '@/lib/game/constants';
 import type { PlayerState, Team, KillFeedEntry } from '@/lib/game/types';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GameHUD } from './GameHUD';
+import { MobileControls } from './MobileControls';
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
@@ -11,17 +12,26 @@ function generateId() {
 
 function randomName() {
   const adjectives = ['Hızlı', 'Sessiz', 'Vahşi', 'Gizli', 'Ölümcül', 'Çabuk', 'Soylu', 'Yabani'];
-  const nouns = ['Kurt', 'Kartal', 'Yılan', 'Aslan', 'Kaplan', 'Avci', 'Mermi', 'Hayalet'];
+  const nouns = ['Kurt', 'Kartal', 'Yılan', 'Aslan', 'Kaplan', 'Avcı', 'Mermi', 'Hayalet'];
   return `${adjectives[Math.floor(Math.random() * adjectives.length)]}${nouns[Math.floor(Math.random() * nouns.length)]}`;
+}
+
+function randomTeam(): Team {
+  return Math.random() < 0.5 ? 't' : 'ct';
+}
+
+function useIsMobile() {
+  return useMemo(() => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches, []);
 }
 
 export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const networkRef = useRef<GameNetwork | null>(null);
+  const isMobile = useIsMobile();
 
   const [playerName, setPlayerName] = useState(randomName());
-  const [team, setTeam] = useState<Team>('ct');
+  const [assignedTeam] = useState<Team>(() => randomTeam());
   const [started, setStarted] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
@@ -29,25 +39,29 @@ export function GameCanvas() {
   const [remoteStates, setRemoteStates] = useState<Record<string, PlayerState>>({});
   const [killFeed, setKillFeed] = useState<KillFeedEntry[]>([]);
   const [showBuy, setShowBuy] = useState(false);
+  const [flashOpacity, setFlashOpacity] = useState(0);
 
   const playerIdRef = useRef(generateId());
   const remoteNameRef = useRef<Record<string, string>>({});
 
   const addKill = useCallback((killer: string, victim: string, weapon: string) => {
-    const entry: KillFeedEntry = {
-      id: generateId(),
-      killer,
-      victim,
-      weapon,
-      timestamp: Date.now(),
-    };
+    const entry: KillFeedEntry = { id: generateId(), killer, victim, weapon, timestamp: Date.now() };
     setKillFeed((prev) => [entry, ...prev].slice(0, 6));
-    setTimeout(() => {
-      setKillFeed((prev) => prev.filter((e) => e.id !== entry.id));
-    }, 5000);
+    setTimeout(() => setKillFeed((prev) => prev.filter((e) => e.id !== entry.id)), 5000);
   }, []);
 
-  // Pointer lock tracking
+  const triggerFlash = useCallback((duration: number) => {
+    setFlashOpacity(1);
+    const start = performance.now();
+    const tick = () => {
+      const t = (performance.now() - start) / duration;
+      if (t >= 1) { setFlashOpacity(0); return; }
+      setFlashOpacity(1 - t);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, []);
+
   useEffect(() => {
     const onLockChange = () => {
       const locked = document.pointerLockElement === canvasRef.current;
@@ -58,15 +72,13 @@ export function GameCanvas() {
     return () => document.removeEventListener('pointerlockchange', onLockChange);
   }, []);
 
-  // Initialize engine + network
   useEffect(() => {
     if (!started) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const pid = playerIdRef.current;
 
-    const engine = new GameEngine(canvas, pid, playerName, team, {
+    const engine = new GameEngine(canvas, pid, playerName, assignedTeam, {
       onShoot: (event) => networkRef.current?.sendShoot({ ...event, id: pid }),
       onHit: (targetId, damage) => networkRef.current?.sendHit({ id: pid, targetId, damage }),
       onDeath: (killerId, victimId, weaponId) => {
@@ -76,6 +88,7 @@ export function GameCanvas() {
         setLocalState({ ...state });
         networkRef.current?.sendState(state);
       },
+      onFlash: (duration) => triggerFlash(duration),
     });
     engineRef.current = engine;
 
@@ -85,7 +98,6 @@ export function GameCanvas() {
     network.on((event) => {
       const currentEngine = engineRef.current;
       if (!currentEngine) return;
-
       switch (event.type) {
         case 'state': {
           const state = event.payload as PlayerState;
@@ -97,47 +109,32 @@ export function GameCanvas() {
         }
         case 'hit': {
           const e = event.payload as { id: string; targetId: string; damage: number };
-          if (e.targetId === pid) {
-            currentEngine.takeDamage(e.damage, e.id);
-          }
+          if (e.targetId === pid) currentEngine.takeDamage(e.damage, e.id);
           break;
         }
         case 'death': {
           const e = event.payload as { killerId: string; victimId: string; weaponId: string };
-          const killerName =
-            remoteNameRef.current[e.killerId] ||
-            (e.killerId === pid ? playerName : e.killerId);
-          const victimName =
-            remoteNameRef.current[e.victimId] ||
-            (e.victimId === pid ? playerName : e.victimId);
+          const killerName = remoteNameRef.current[e.killerId] || (e.killerId === pid ? playerName : e.killerId);
+          const victimName = remoteNameRef.current[e.victimId] || (e.victimId === pid ? playerName : e.victimId);
           addKill(killerName, victimName, WEAPONS[e.weaponId]?.name || e.weaponId);
-
           if (e.killerId === pid && e.victimId !== pid) {
             currentEngine.addMoney(KILL_REWARD);
             currentEngine.addKill();
           }
           break;
         }
-        case 'buy': {
-          // Sadece görsel / ses için; şimdilik sessiz
-          break;
-        }
         case 'leave': {
           const { key } = event.payload as { key: string };
           currentEngine.removeRemotePlayer(key);
           delete remoteNameRef.current[key];
-          setRemoteStates((prev) => {
-            const next = { ...prev };
-            delete next[key];
-            return next;
-          });
+          setRemoteStates((prev) => { const next = { ...prev }; delete next[key]; return next; });
           break;
         }
       }
     });
 
     engine.start();
-    engine.lockPointer();
+    if (!isMobile) engine.lockPointer();
 
     return () => {
       engine.cleanup();
@@ -145,15 +142,13 @@ export function GameCanvas() {
       engineRef.current = null;
       networkRef.current = null;
     };
-  }, [started, playerName, team, addKill]);
+  }, [started, playerName, assignedTeam, addKill, triggerFlash, isMobile]);
 
-  // Buy menu toggle
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code !== 'KeyB') return;
       const engine = engineRef.current;
       if (!engine || !started) return;
-
       if (showBuy) {
         setShowBuy(false);
         if (!engine.getState().isDead) engine.lockPointer();
@@ -173,7 +168,7 @@ export function GameCanvas() {
       networkRef.current?.sendBuy({ id: playerIdRef.current, weaponId });
     }
     setShowBuy(false);
-    if (!engine.getState().isDead) engine.lockPointer();
+    if (!isMobile && !engine.getState().isDead) engine.lockPointer();
   };
 
   const startGame = () => {
@@ -182,14 +177,16 @@ export function GameCanvas() {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-black">
+    <div className="relative h-[100dvh] w-screen overflow-hidden bg-black touch-none select-none">
       <canvas ref={canvasRef} className="block h-full w-full" />
 
       {!started && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-white">
-          <div className="w-full max-w-sm rounded-xl bg-neutral-900/90 p-6 shadow-2xl">
-            <h1 className="mb-2 text-center text-3xl font-black tracking-tight">CS CLONE</h1>
-            <p className="mb-6 text-center text-sm text-gray-400">3D çok oyunculu arena shooter</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-4 text-white">
+          <div className="w-full max-w-sm rounded-2xl bg-gradient-to-b from-neutral-900 to-neutral-950 p-6 shadow-2xl ring-1 ring-white/10">
+            <h1 className="mb-1 text-center text-4xl font-black tracking-tight">
+              <span className="text-orange-500">CS 2</span> <span className="text-blue-500">MOBILE</span>
+            </h1>
+            <p className="mb-6 text-center text-xs text-gray-400">Tarayıcıda 3D çok oyunculu FPS</p>
 
             <label className="mb-1 block text-sm text-gray-300">Oyuncu Adı</label>
             <input
@@ -199,24 +196,11 @@ export function GameCanvas() {
               maxLength={16}
             />
 
-            <label className="mb-2 block text-sm text-gray-300">Takım</label>
-            <div className="mb-6 flex gap-3">
-              <button
-                onClick={() => setTeam('t')}
-                className={`flex-1 rounded-lg py-2 font-bold transition ${
-                  team === 't' ? 'bg-orange-600 text-white' : 'bg-white/10 text-gray-300 hover:bg-white/15'
-                }`}
-              >
-                TERÖRİST
-              </button>
-              <button
-                onClick={() => setTeam('ct')}
-                className={`flex-1 rounded-lg py-2 font-bold transition ${
-                  team === 'ct' ? 'bg-blue-600 text-white' : 'bg-white/10 text-gray-300 hover:bg-white/15'
-                }`}
-              >
-                CT
-              </button>
+            <div className="mb-6 rounded-lg bg-white/5 p-3 text-center">
+              <div className="text-xs text-gray-400">Takımın (rastgele atandı)</div>
+              <div className={`mt-1 text-xl font-black ${assignedTeam === 't' ? 'text-orange-500' : 'text-blue-500'}`}>
+                {assignedTeam === 't' ? 'TERÖRİST' : 'ANTI-TERÖRİST'}
+              </div>
             </div>
 
             <button
@@ -226,14 +210,18 @@ export function GameCanvas() {
               OYNA
             </button>
 
-            <div className="mt-4 text-center text-xs text-gray-500">
-              WASD hareket • Mouse nişan • Sol tık ateş • Sağ tık scope • R reload • B satın al • Tab skor
+            <div className="mt-4 text-center text-[11px] leading-relaxed text-gray-500">
+              {isMobile ? (
+                <>Sol joystick: hareket • Sağ ekran: nişan • ATEŞ butonu • F Flash • G HE</>
+              ) : (
+                <>WASD hareket • Mouse nişan • Sol tık ateş • Sağ tık scope • R reload • B satın al • F Flash • G HE • Tab skor</>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {started && !isLocked && !showBuy && (
+      {started && !isMobile && !isLocked && !showBuy && (
         <div
           onClick={() => engineRef.current?.lockPointer()}
           className="absolute inset-0 flex cursor-pointer items-center justify-center bg-black/50 text-white"
@@ -245,7 +233,28 @@ export function GameCanvas() {
         </div>
       )}
 
+      {/* Flash overlay */}
+      {flashOpacity > 0 && (
+        <div
+          className="pointer-events-none absolute inset-0 bg-white"
+          style={{ opacity: flashOpacity }}
+        />
+      )}
+
       <GameHUD state={localState} remoteStates={remoteStates} killFeed={killFeed} showBuy={showBuy} onBuy={handleBuy} />
+
+      {started && isMobile && (
+        <MobileControls
+          onMove={(x, y) => engineRef.current?.mobileMove(x, y)}
+          onLook={(dx, dy) => engineRef.current?.mobileLook(dx, dy)}
+          onFire={(v) => engineRef.current?.mobileSetFire(v)}
+          onAim={(v) => engineRef.current?.mobileSetAim(v)}
+          onReload={() => engineRef.current?.mobileReload()}
+          onThrowFlash={() => engineRef.current?.mobileThrow('flash')}
+          onThrowHE={() => engineRef.current?.mobileThrow('he')}
+          onOpenBuy={() => setShowBuy(true)}
+        />
+      )}
     </div>
   );
 }

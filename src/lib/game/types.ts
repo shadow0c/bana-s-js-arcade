@@ -49,6 +49,7 @@ export interface WeaponDef {
   range: number;
   scope?: boolean;
   recoil: number;
+  grenade?: 'flash' | 'he';
 }
 
 export interface MapBox {
