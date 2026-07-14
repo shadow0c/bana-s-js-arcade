@@ -79,7 +79,7 @@ export function GameCanvas() {
     });
     engineRef.current = engine;
 
-    const network = new GameNetwork('default', pid, engine.state);
+    const network = new GameNetwork('default', pid, engine.getState());
     networkRef.current = network;
 
     network.on((event) => {
@@ -156,8 +156,8 @@ export function GameCanvas() {
 
       if (showBuy) {
         setShowBuy(false);
-        if (!engine.state.isDead) engine.lockPointer();
-      } else if (engine.isLocked() && !engine.state.isDead) {
+        if (!engine.getState().isDead) engine.lockPointer();
+      } else if (engine.isLocked() && !engine.getState().isDead) {
         engine.unlockPointer();
         setShowBuy(true);
       }
@@ -173,7 +173,7 @@ export function GameCanvas() {
       networkRef.current?.sendBuy({ id: playerIdRef.current, weaponId });
     }
     setShowBuy(false);
-    if (!engine.state.isDead) engine.lockPointer();
+    if (!engine.getState().isDead) engine.lockPointer();
   };
 
   const startGame = () => {
