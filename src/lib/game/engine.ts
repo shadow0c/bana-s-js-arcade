@@ -556,12 +556,14 @@ export class GameEngine {
 
   private detonateGrenade(g: Grenade) {
     if (g.type === 'flash') {
+      gameAudio.flashBang();
       const dist = g.mesh.position.distanceTo(this.camera.position);
       if (dist < 15) {
         const duration = Math.max(500, 2500 - dist * 120);
         this.callbacks.onFlash?.(duration);
       }
     } else {
+      gameAudio.explosion();
       // HE — damage self if close, and remote via hit events
       const dist = g.mesh.position.distanceTo(this.camera.position);
       if (dist < 6) {
