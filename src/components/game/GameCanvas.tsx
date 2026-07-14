@@ -262,6 +262,7 @@ export function GameCanvas() {
           onThrowFlash={() => engineRef.current?.mobileThrow('flash')}
           onThrowHE={() => engineRef.current?.mobileThrow('he')}
           onOpenBuy={() => setShowBuy(true)}
+          onWeapon={(id) => engineRef.current?.setWeapon(id)}
         />
       )}
     </div>
