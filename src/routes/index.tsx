@@ -4,10 +4,11 @@ export const Route = createFileRoute('/')({
   component: Index,
   head: () => ({
     meta: [
-      { title: 'CS Clone - 3D Çok Oyunculu Shooter' },
-      { name: 'description', content: 'Tarayıcıda çalışan 3D çok oyunculu arena shooter.' },
-      { property: 'og:title', content: 'CS Clone - 3D Çok Oyunculu Shooter' },
-      { property: 'og:description', content: 'Tarayıcıda çalışan 3D çok oyunculu arena shooter.' },
+      { title: 'CS 2 Mobile - Tarayıcıda 3D FPS' },
+      { name: 'description', content: 'CS 2 Mobile: tarayıcıda çalışan, mobil destekli, 3D çok oyunculu FPS arena.' },
+      { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover' },
+      { property: 'og:title', content: 'CS 2 Mobile - Tarayıcıda 3D FPS' },
+      { property: 'og:description', content: 'Mobil ve masaüstünden oyna: dust2 esintili harita, silahlar, granatlar.' },
       { property: 'og:type', content: 'website' },
       { name: 'twitter:card', content: 'summary_large_image' },
     ],
@@ -16,13 +17,13 @@ export const Route = createFileRoute('/')({
 
 function Index() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-950 px-4 text-white">
+    <div className="flex min-h-[100dvh] flex-col items-center justify-center bg-neutral-950 px-4 text-white">
       <div className="text-center">
         <h1 className="mb-2 text-5xl font-black tracking-tighter sm:text-7xl">
-          <span className="text-orange-500">CS</span>{' '}
-          <span className="text-blue-500">CLONE</span>
+          <span className="text-orange-500">CS 2</span>{' '}
+          <span className="text-blue-500">MOBILE</span>
         </h1>
-        <p className="mb-8 text-lg text-gray-400">Three.js tabanlı 3D çok oyunculu arena shooter</p>
+        <p className="mb-8 text-lg text-gray-400">Tarayıcıda 3D çok oyunculu FPS — mobil destekli</p>
         <Link
           to="/game"
           className="inline-flex items-center justify-center rounded-xl bg-green-600 px-8 py-4 text-xl font-bold transition hover:bg-green-500"
@@ -33,12 +34,20 @@ function Index() {
 
       <div className="mt-12 grid max-w-2xl gap-4 text-sm text-gray-500 sm:grid-cols-2">
         <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Kontroller</strong>
-          WASD hareket, Mouse nişan, Sol tık ateş, Sağ tık scope, R reload
+          <strong className="block text-white">Masaüstü</strong>
+          WASD hareket, Mouse nişan, Sol tık ateş, Sağ tık scope, R reload, F flash, G HE
         </div>
         <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Silahlar ve Ekonomi</strong>
-          Glock, AK-47, AWP. Kill başına $300 kazan, B ile satın al menüsünü aç
+          <strong className="block text-white">Mobil</strong>
+          Sol joystick hareket, sağ ekran nişan, ATEŞ + SCOPE + FLASH + HE butonları
+        </div>
+        <div className="rounded-lg bg-white/5 p-4">
+          <strong className="block text-white">Silahlar</strong>
+          Glock, Desert Eagle, AK-47, M4A4, AWP, Bıçak + Flashbang & HE Granat
+        </div>
+        <div className="rounded-lg bg-white/5 p-4">
+          <strong className="block text-white">Harita</strong>
+          Dust2 esintili A / B siteleri, texture'lı duvarlar, mermi izleri
         </div>
       </div>
     </div>
