@@ -9,133 +9,159 @@ interface MobileControlsProps {
   onThrowFlash: () => void;
   onThrowHE: () => void;
   onOpenBuy: () => void;
+  onWeapon: (id: string) => void;
 }
 
+/**
+ * Sol yarım ekran = joystick (dokunulan yer joystick merkezi olur — dinamik).
+ * Sağ yarım ekran = bakış (swipe).
+ * Butonlar bunlardan bağımsız pointer-events-auto ile yakalar.
+ */
 export function MobileControls(props: MobileControlsProps) {
-  const joyRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLDivElement>(null);
-  const lookRef = useRef<HTMLDivElement>(null);
-  const activeTouches = useRef<Record<number, 'joy' | 'look'>>({});
-  const joyStart = useRef<{ x: number; y: number } | null>(null);
+  const baseRef = useRef<HTMLDivElement>(null);
+
+  const joyTouchId = useRef<number | null>(null);
+  const lookTouchId = useRef<number | null>(null);
+  const joyCenter = useRef<{ x: number; y: number } | null>(null);
   const lookLast = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    const joy = joyRef.current;
+    const root = rootRef.current;
     const knob = knobRef.current;
-    const look = lookRef.current;
-    if (!joy || !knob || !look) return;
+    const base = baseRef.current;
+    if (!root || !knob || !base) return;
 
-    const RADIUS = 55;
+    const RADIUS = 60;
+
+    const isButton = (target: EventTarget | null) =>
+      target instanceof Element && !!target.closest('[data-touch-btn]');
 
     const onStart = (e: TouchEvent) => {
       for (const t of Array.from(e.changedTouches)) {
-        const jr = joy.getBoundingClientRect();
-        const inJoy =
-          t.clientX >= jr.left - 20 && t.clientX <= jr.right + 20 &&
-          t.clientY >= jr.top - 20 && t.clientY <= jr.bottom + 20;
-        if (inJoy && !Object.values(activeTouches.current).includes('joy')) {
-          activeTouches.current[t.identifier] = 'joy';
-          joyStart.current = { x: jr.left + jr.width / 2, y: jr.top + jr.height / 2 };
-        } else {
-          activeTouches.current[t.identifier] = 'look';
+        if (isButton(t.target)) continue;
+        const half = window.innerWidth / 2;
+        if (t.clientX < half && joyTouchId.current === null) {
+          // JOYSTICK
+          joyTouchId.current = t.identifier;
+          joyCenter.current = { x: t.clientX, y: t.clientY };
+          base.style.left = `${t.clientX}px`;
+          base.style.top = `${t.clientY}px`;
+          base.style.opacity = '1';
+          knob.style.transform = `translate(-50%, -50%)`;
+        } else if (t.clientX >= half && lookTouchId.current === null) {
+          // LOOK
+          lookTouchId.current = t.identifier;
           lookLast.current = { x: t.clientX, y: t.clientY };
         }
+        e.preventDefault();
       }
     };
 
     const onMove = (e: TouchEvent) => {
       for (const t of Array.from(e.changedTouches)) {
-        const kind = activeTouches.current[t.identifier];
-        if (kind === 'joy' && joyStart.current) {
-          let dx = t.clientX - joyStart.current.x;
-          let dy = t.clientY - joyStart.current.y;
+        if (t.identifier === joyTouchId.current && joyCenter.current) {
+          let dx = t.clientX - joyCenter.current.x;
+          let dy = t.clientY - joyCenter.current.y;
           const len = Math.hypot(dx, dy);
           if (len > RADIUS) { dx = (dx / len) * RADIUS; dy = (dy / len) * RADIUS; }
-          knob.style.transform = `translate(${dx}px, ${dy}px)`;
+          knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
           props.onMove(dx / RADIUS, dy / RADIUS);
-        } else if (kind === 'look' && lookLast.current) {
+        } else if (t.identifier === lookTouchId.current && lookLast.current) {
           const dx = t.clientX - lookLast.current.x;
           const dy = t.clientY - lookLast.current.y;
           lookLast.current = { x: t.clientX, y: t.clientY };
-          props.onLook(dx * 3, dy * 3);
+          props.onLook(dx * 4, dy * 4);
         }
       }
+      e.preventDefault();
     };
 
     const onEnd = (e: TouchEvent) => {
       for (const t of Array.from(e.changedTouches)) {
-        const kind = activeTouches.current[t.identifier];
-        if (kind === 'joy') {
-          knob.style.transform = 'translate(0,0)';
+        if (t.identifier === joyTouchId.current) {
+          joyTouchId.current = null;
+          joyCenter.current = null;
           props.onMove(0, 0);
-          joyStart.current = null;
-        } else if (kind === 'look') {
+          knob.style.transform = 'translate(-50%, -50%)';
+          base.style.opacity = '0';
+        } else if (t.identifier === lookTouchId.current) {
+          lookTouchId.current = null;
           lookLast.current = null;
         }
-        delete activeTouches.current[t.identifier];
       }
     };
 
-    look.addEventListener('touchstart', onStart, { passive: false });
-    look.addEventListener('touchmove', onMove, { passive: false });
-    look.addEventListener('touchend', onEnd);
-    look.addEventListener('touchcancel', onEnd);
+    root.addEventListener('touchstart', onStart, { passive: false });
+    root.addEventListener('touchmove', onMove, { passive: false });
+    root.addEventListener('touchend', onEnd);
+    root.addEventListener('touchcancel', onEnd);
     return () => {
-      look.removeEventListener('touchstart', onStart);
-      look.removeEventListener('touchmove', onMove);
-      look.removeEventListener('touchend', onEnd);
-      look.removeEventListener('touchcancel', onEnd);
+      root.removeEventListener('touchstart', onStart);
+      root.removeEventListener('touchmove', onMove);
+      root.removeEventListener('touchend', onEnd);
+      root.removeEventListener('touchcancel', onEnd);
     };
   }, [props]);
 
-  const btnBase =
-    'select-none rounded-full bg-black/50 backdrop-blur text-white font-bold text-xs flex items-center justify-center border border-white/20 active:bg-white/20';
+  const btn =
+    'select-none rounded-full bg-black/55 backdrop-blur text-white font-bold text-[10px] flex items-center justify-center border border-white/25 active:bg-white/20 pointer-events-auto touch-none';
 
   return (
     <>
-      {/* Look area covers full screen but sits behind buttons */}
-      <div ref={lookRef} className="absolute inset-0 z-10" />
+      {/* Root captures all touches (below buttons via lower z-index) */}
+      <div ref={rootRef} className="absolute inset-0 z-10 touch-none" />
 
-      {/* Joystick */}
-      <div ref={joyRef} className="pointer-events-none absolute bottom-8 left-8 z-20 h-32 w-32 rounded-full bg-white/10 backdrop-blur">
-        <div ref={knobRef} className="absolute left-1/2 top-1/2 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/40" />
+      {/* Joystick base (appears where user touches) */}
+      <div
+        ref={baseRef}
+        className="pointer-events-none absolute z-20 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/10 opacity-0 transition-opacity"
+        style={{ left: 100, top: 100 }}
+      >
+        <div
+          ref={knobRef}
+          className="absolute left-1/2 top-1/2 h-14 w-14 rounded-full bg-white/50"
+          style={{ transform: 'translate(-50%, -50%)' }}
+        />
       </div>
 
-      {/* Action buttons (right side) */}
-      <div className="pointer-events-none absolute bottom-8 right-6 z-20 flex flex-col items-end gap-3">
-        <div className="flex gap-3">
-          <button
-            className={`${btnBase} pointer-events-auto h-12 w-12`}
-            onTouchStart={(e) => { e.preventDefault(); props.onThrowFlash(); }}
-          >FLASH</button>
-          <button
-            className={`${btnBase} pointer-events-auto h-12 w-12`}
-            onTouchStart={(e) => { e.preventDefault(); props.onThrowHE(); }}
-          >HE</button>
+      {/* Right side action stack */}
+      <div className="pointer-events-none absolute bottom-6 right-4 z-30 flex flex-col items-end gap-2">
+        <div className="flex gap-2">
+          <button data-touch-btn className={`${btn} h-11 w-11`}
+            onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onThrowFlash(); }}>FLASH</button>
+          <button data-touch-btn className={`${btn} h-11 w-11`}
+            onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onThrowHE(); }}>HE</button>
         </div>
-        <div className="flex items-end gap-3">
-          <button
-            className={`${btnBase} pointer-events-auto h-12 w-12`}
-            onTouchStart={(e) => { e.preventDefault(); props.onReload(); }}
-          >R</button>
-          <button
-            className={`${btnBase} pointer-events-auto h-14 w-14`}
-            onTouchStart={(e) => { e.preventDefault(); props.onAim(true); }}
-            onTouchEnd={(e) => { e.preventDefault(); props.onAim(false); }}
-          >SCOPE</button>
-          <button
-            className={`${btnBase} pointer-events-auto h-20 w-20 !bg-red-600/70`}
-            onTouchStart={(e) => { e.preventDefault(); props.onFire(true); }}
-            onTouchEnd={(e) => { e.preventDefault(); props.onFire(false); }}
-          >ATEŞ</button>
+        <div className="flex items-end gap-2">
+          <button data-touch-btn className={`${btn} h-11 w-11`}
+            onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onReload(); }}>R</button>
+          <button data-touch-btn className={`${btn} h-12 w-12`}
+            onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onAim(true); }}
+            onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); props.onAim(false); }}>SCOPE</button>
+          <button data-touch-btn className={`${btn} !h-20 !w-20 !bg-red-600/70 !text-sm`}
+            onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onFire(true); }}
+            onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); props.onFire(false); }}>ATEŞ</button>
         </div>
       </div>
 
-      {/* Top-right buy button */}
-      <button
-        className={`${btnBase} pointer-events-auto absolute right-4 top-4 z-20 h-10 w-14`}
-        onTouchStart={(e) => { e.preventDefault(); props.onOpenBuy(); }}
-      >SATIN AL</button>
+      {/* Top bar: weapon slots + buy */}
+      <div className="pointer-events-none absolute right-4 top-4 z-30 flex flex-col items-end gap-2">
+        <button data-touch-btn className={`${btn} h-9 w-16`}
+          onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onOpenBuy(); }}>SATIN AL</button>
+        <div className="flex gap-1">
+          {[
+            { id: 'pistol', label: '1' },
+            { id: 'rifle', label: '2' },
+            { id: 'sniper', label: '3' },
+            { id: 'knife', label: '4' },
+          ].map((w) => (
+            <button key={w.id} data-touch-btn className={`${btn} h-9 w-9`}
+              onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); props.onWeapon(w.id); }}>{w.label}</button>
+          ))}
+        </div>
+      </div>
     </>
   );
 }
