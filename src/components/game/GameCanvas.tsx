@@ -84,6 +84,7 @@ export function GameCanvas() {
     if (!canvas) return;
     const pid = playerIdRef.current;
 
+    if (!assignedTeam) return;
     const engine = new GameEngine(canvas, pid, playerName, assignedTeam, {
       onShoot: (event) => networkRef.current?.sendShoot({ ...event, id: pid }),
       onHit: (targetId, damage) => networkRef.current?.sendHit({ id: pid, targetId, damage }),
@@ -178,7 +179,9 @@ export function GameCanvas() {
   };
 
   const startGame = () => {
-    if (!playerName.trim()) return;
+    if (!playerName.trim() || !assignedTeam) return;
+    // WebAudio unlock (user gesture required)
+    import('@/lib/game/audio').then((m) => m.gameAudio.unlock());
     setStarted(true);
   };
 
@@ -204,8 +207,8 @@ export function GameCanvas() {
 
             <div className="mb-6 rounded-lg bg-white/5 p-3 text-center">
               <div className="text-xs text-gray-400">Takımın (rastgele atandı)</div>
-              <div className={`mt-1 text-xl font-black ${assignedTeam === 't' ? 'text-orange-500' : 'text-blue-500'}`}>
-                {assignedTeam === 't' ? 'TERÖRİST' : 'ANTI-TERÖRİST'}
+              <div className={`mt-1 text-xl font-black ${assignedTeam === 't' ? 'text-orange-500' : assignedTeam === 'ct' ? 'text-blue-500' : 'text-gray-500'}`}>
+                {assignedTeam === 't' ? 'TERÖRİST' : assignedTeam === 'ct' ? 'ANTI-TERÖRİST' : '...'}
               </div>
             </div>
 
