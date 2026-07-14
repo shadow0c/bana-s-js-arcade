@@ -438,6 +438,7 @@ export class GameEngine {
 
     this.lastShotTime = now;
     this.state.ammo--;
+    gameAudio.shoot(weapon.id);
 
     this.pitch += weapon.recoil * (Math.random() * 0.5 + 0.8);
     this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
