@@ -30,8 +30,14 @@ export function GameCanvas() {
   const networkRef = useRef<GameNetwork | null>(null);
   const isMobile = useIsMobile();
 
-  const [playerName, setPlayerName] = useState(randomName());
-  const [assignedTeam] = useState<Team>(() => randomTeam());
+  const [playerName, setPlayerName] = useState('');
+  const [assignedTeam, setAssignedTeam] = useState<Team | null>(null);
+
+  // Hydration-safe: pick name+team only after mount
+  useEffect(() => {
+    setPlayerName(randomName());
+    setAssignedTeam(randomTeam());
+  }, []);
   const [started, setStarted] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
