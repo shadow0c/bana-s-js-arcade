@@ -14,6 +14,7 @@ import {
   TEXTURES,
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
+import { gameAudio } from './audio';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
