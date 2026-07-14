@@ -14,6 +14,7 @@ import {
   TEXTURES,
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
+import { gameAudio } from './audio';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
@@ -437,6 +438,7 @@ export class GameEngine {
 
     this.lastShotTime = now;
     this.state.ammo--;
+    gameAudio.shoot(weapon.id);
 
     this.pitch += weapon.recoil * (Math.random() * 0.5 + 0.8);
     this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
@@ -554,12 +556,14 @@ export class GameEngine {
 
   private detonateGrenade(g: Grenade) {
     if (g.type === 'flash') {
+      gameAudio.flashBang();
       const dist = g.mesh.position.distanceTo(this.camera.position);
       if (dist < 15) {
         const duration = Math.max(500, 2500 - dist * 120);
         this.callbacks.onFlash?.(duration);
       }
     } else {
+      gameAudio.explosion();
       // HE — damage self if close, and remote via hit events
       const dist = g.mesh.position.distanceTo(this.camera.position);
       if (dist < 6) {
@@ -581,6 +585,7 @@ export class GameEngine {
     if (!weapon || weapon.reloadTime === 0 || this.state.ammo >= weapon.clipSize) return;
     this.isReloading = true;
     this.reloadEndTime = performance.now() + weapon.reloadTime;
+    gameAudio.reload();
   }
 
   private updateReload(now: number) {
@@ -672,6 +677,7 @@ export class GameEngine {
   public takeDamage(amount: number, sourceId: string) {
     if (this.state.isDead) return;
     this.state.health = Math.max(0, this.state.health - amount);
+    gameAudio.hit();
     if (this.state.health <= 0) this.die(sourceId);
   }
 
@@ -714,17 +720,50 @@ export class GameEngine {
   public addRemotePlayer(state: PlayerState) {
     if (this.remotePlayers.has(state.id)) return;
     const group = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({ color: state.team === 't' ? COLORS.t : COLORS.ct });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(PLAYER_RADIUS * 2, PLAYER_HEIGHT, PLAYER_RADIUS * 2), bodyMat);
-    body.position.y = PLAYER_HEIGHT / 2;
-    body.userData.playerId = state.id;
-    group.add(body);
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), new THREE.MeshStandardMaterial({ color: 0xffdbac }));
-    head.position.y = PLAYER_HEIGHT + 0.14;
-    head.userData.playerId = state.id;
-    group.add(head);
-    const weaponMesh = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.55), new THREE.MeshStandardMaterial({ color: 0x222222 }));
-    weaponMesh.position.set(0.25, PLAYER_HEIGHT - 0.35, 0.35);
+    const teamColor = state.team === 't' ? COLORS.t : COLORS.ct;
+    const uniformMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.7 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b088, roughness: 0.85 });
+    const vestMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6 });
+
+    // Bacaklar
+    const legGeo = new THREE.BoxGeometry(0.22, 0.85, 0.22);
+    const leftLeg = new THREE.Mesh(legGeo, pantsMat);
+    leftLeg.position.set(-0.12, 0.42, 0); leftLeg.userData.playerId = state.id;
+    const rightLeg = new THREE.Mesh(legGeo, pantsMat);
+    rightLeg.position.set(0.12, 0.42, 0); rightLeg.userData.playerId = state.id;
+    // Gövde
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.6, 0.32), uniformMat);
+    torso.position.y = 1.15; torso.userData.playerId = state.id;
+    // Yelek
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.42, 0.34), vestMat);
+    vest.position.y = 1.15; vest.userData.playerId = state.id;
+    // Kollar
+    const armGeo = new THREE.BoxGeometry(0.15, 0.55, 0.15);
+    const leftArm = new THREE.Mesh(armGeo, uniformMat);
+    leftArm.position.set(-0.36, 1.15, 0); leftArm.userData.playerId = state.id;
+    const rightArm = new THREE.Mesh(armGeo, uniformMat);
+    rightArm.position.set(0.36, 1.15, 0); rightArm.userData.playerId = state.id;
+    // Boyun + Kafa
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.1, 0.15), skinMat);
+    neck.position.y = 1.5; neck.userData.playerId = state.id;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.32, 0.3), skinMat);
+    head.position.y = 1.72; head.userData.playerId = state.id;
+    // Kask
+    const helmet = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.14, 0.34),
+      new THREE.MeshStandardMaterial({ color: state.team === 't' ? 0x552211 : 0x1a2f5a, roughness: 0.5 }),
+    );
+    helmet.position.y = 1.9; helmet.userData.playerId = state.id;
+
+    group.add(leftLeg, rightLeg, torso, vest, leftArm, rightArm, neck, head, helmet);
+
+    // Silah
+    const weaponMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.1, 0.65),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.6, roughness: 0.4 }),
+    );
+    weaponMesh.position.set(0.28, 1.2, 0.35);
     weaponMesh.userData.playerId = state.id;
     group.add(weaponMesh);
 
@@ -745,7 +784,7 @@ export class GameEngine {
     rp.targetPosition.set(state.position.x, 0, state.position.z);
     rp.targetRotation.x = state.rotation.x;
     rp.targetRotation.y = state.rotation.y;
-    const head = rp.mesh.children[1];
+    const head = rp.mesh.children[7];
     if (head) head.rotation.x = state.rotation.x;
   }
 
