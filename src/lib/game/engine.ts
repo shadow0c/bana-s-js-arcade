@@ -523,6 +523,9 @@ export class GameEngine {
     this.pitch = 0;
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
+    this.isScoped = false;
+    this.camera.fov = 75;
+    this.camera.updateProjectionMatrix();
     this.state.position = spawn;
     this.state.health = MAX_HEALTH;
     this.state.isDead = false;
