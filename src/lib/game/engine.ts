@@ -642,16 +642,44 @@ export class GameEngine {
 
   private updateGrenades(dt: number, now: number) {
     const gravity = -18;
+    const r = 0.15;
     for (let i = this.grenades.length - 1; i >= 0; i--) {
       const g = this.grenades[i];
       g.velocity.y += gravity * dt;
+      const prev = g.mesh.position.clone();
       g.mesh.position.addScaledVector(g.velocity, dt);
-      // floor bounce
-      if (g.mesh.position.y < 0.15) {
-        g.mesh.position.y = 0.15;
+
+      // Zemin
+      if (g.mesh.position.y < r) {
+        g.mesh.position.y = r;
         g.velocity.y *= -0.4;
-        g.velocity.x *= 0.7;
-        g.velocity.z *= 0.7;
+        g.velocity.x *= 0.75;
+        g.velocity.z *= 0.75;
+      }
+
+      // Dış harita sınırları
+      if (g.mesh.position.x - r < MAP_BOUNDS.minX) { g.mesh.position.x = MAP_BOUNDS.minX + r; g.velocity.x *= -0.5; }
+      if (g.mesh.position.x + r > MAP_BOUNDS.maxX) { g.mesh.position.x = MAP_BOUNDS.maxX - r; g.velocity.x *= -0.5; }
+      if (g.mesh.position.z - r < MAP_BOUNDS.minZ) { g.mesh.position.z = MAP_BOUNDS.minZ + r; g.velocity.z *= -0.5; }
+      if (g.mesh.position.z + r > MAP_BOUNDS.maxZ) { g.mesh.position.z = MAP_BOUNDS.maxZ - r; g.velocity.z *= -0.5; }
+
+      // Duvar AABB çarpışması - kutu yönüne göre sekme
+      for (const box of this.colliders) {
+        if (
+          g.mesh.position.x + r > box.min.x && g.mesh.position.x - r < box.max.x &&
+          g.mesh.position.y + r > box.min.y && g.mesh.position.y - r < box.max.y &&
+          g.mesh.position.z + r > box.min.z && g.mesh.position.z - r < box.max.z
+        ) {
+          // Hangi eksende girildiyse o eksende sek
+          const enteredX = prev.x + r <= box.min.x || prev.x - r >= box.max.x;
+          const enteredZ = prev.z + r <= box.min.z || prev.z - r >= box.max.z;
+          const enteredY = prev.y + r <= box.min.y || prev.y - r >= box.max.y;
+          if (enteredX) { g.mesh.position.x = prev.x; g.velocity.x *= -0.5; }
+          else if (enteredZ) { g.mesh.position.z = prev.z; g.velocity.z *= -0.5; }
+          else if (enteredY) { g.mesh.position.y = prev.y; g.velocity.y *= -0.4; }
+          else { g.mesh.position.copy(prev); g.velocity.multiplyScalar(-0.5); }
+          g.velocity.multiplyScalar(0.8);
+        }
       }
       if (now >= g.detonateAt) {
         this.detonateGrenade(g);
