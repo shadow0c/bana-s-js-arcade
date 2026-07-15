@@ -175,7 +175,15 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
       {showBuy && (
         <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/70">
           <div className="mx-4 w-full max-w-md rounded-lg bg-black/90 p-6 text-white">
-            <h2 className="mb-4 text-center text-xl font-bold">SATIN AL</h2>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-bold">SATIN AL</h2>
+              <button
+                onClick={() => onCloseBuy?.()}
+                className="rounded bg-red-600 px-3 py-1 text-sm font-bold text-white transition hover:bg-red-500"
+              >
+                ✕ KAPAT
+              </button>
+            </div>
             <div className="space-y-2">
               {Object.values(WEAPONS).map((w) => (
                 <button
@@ -191,9 +199,12 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
                 </button>
               ))}
             </div>
-            <p className="mt-4 text-center text-sm text-gray-400">
-              Tekrar oynamak için B&apos;ye bas veya bir silah seç
-            </p>
+            <button
+              onClick={() => onCloseBuy?.()}
+              className="mt-4 w-full rounded bg-white/10 py-2 text-sm font-bold text-white transition hover:bg-white/20"
+            >
+              KAPAT (B)
+            </button>
           </div>
         </div>
       )}
