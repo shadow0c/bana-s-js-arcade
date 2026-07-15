@@ -452,10 +452,27 @@ export class GameEngine {
     this.updateMovement(dt);
     this.updateShooting(now);
     this.updateReload(now);
+    this.updateRecoilRecovery(dt, now);
     this.updateWeaponModel(dt);
     this.updateRemotePlayers(dt);
     this.updateGrenades(dt, now);
     this.broadcastStateIfNeeded(now);
+  }
+
+  private updateRecoilRecovery(dt: number, now: number) {
+    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir
+    if (this.isShooting) return;
+    if (now - this.lastShotTime < 60) return;
+    const recover = Math.min(1, dt * 8);
+    const dp = this.recoilPitch * recover;
+    const dy = this.recoilYaw * recover;
+    this.pitch -= dp; this.recoilPitch -= dp;
+    this.yaw -= dy; this.recoilYaw -= dy;
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
+    if (Math.abs(this.recoilPitch) < 0.001) this.recoilPitch = 0;
+    if (Math.abs(this.recoilYaw) < 0.001) this.recoilYaw = 0;
+    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) this.consecutiveShots = 0;
   }
 
   private updateMovement(dt: number) {
