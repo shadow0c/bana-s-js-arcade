@@ -749,12 +749,7 @@ export class GameEngine {
   }
 
   private updateWeaponModel(dt: number) {
-    if (!this.weaponModel) return;
-    const time = performance.now() / 1000;
-    const moving = this.direction.lengthSq() > 0;
-    const bob = Math.sin(time * (moving ? 12 : 2)) * (moving ? 0.012 : 0.004);
-    this.weaponModel.position.y = -0.25 + bob;
-
+    // Scope FOV lerp (silah 2D HUD'da)
     const targetFov = this.isScoped && WEAPONS[this.state.weaponId].scope ? 22 : 75;
     if (Math.abs(this.camera.fov - targetFov) > 0.1) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, dt * 12);
