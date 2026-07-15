@@ -1,6 +1,21 @@
 import { useEffect, useState } from 'react';
 import { WEAPONS } from '@/lib/game/constants';
 import type { PlayerState, KillFeedEntry } from '@/lib/game/types';
+import akImg from '@/assets/weapons/ak47.png';
+import awpImg from '@/assets/weapons/awp.png';
+import m4Img from '@/assets/weapons/m4.png';
+import glockImg from '@/assets/weapons/glock.png';
+import deagleImg from '@/assets/weapons/deagle.png';
+import knifeImg from '@/assets/weapons/knife.png';
+
+const WEAPON_IMG: Record<string, string> = {
+  rifle: akImg,
+  sniper: awpImg,
+  m4: m4Img,
+  pistol: glockImg,
+  deagle: deagleImg,
+  knife: knifeImg,
+};
 
 interface GameHUDProps {
   state: PlayerState | null;
@@ -8,9 +23,10 @@ interface GameHUDProps {
   killFeed: KillFeedEntry[];
   showBuy: boolean;
   onBuy: (weaponId: string) => void;
+  onCloseBuy?: () => void;
 }
 
-export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy }: GameHUDProps) {
+export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onCloseBuy }: GameHUDProps) {
   const [showScores, setShowScores] = useState(false);
 
   useEffect(() => {
