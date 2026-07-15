@@ -731,53 +731,10 @@ export class GameEngine {
   }
 
   private equipWeapon(id: string) {
-    if (this.weaponModel) this.camera.remove(this.weaponModel);
+    // 3D silah modeli kaldırıldı — HUD gerçekçi 2D silah görselini gösteriyor.
+    if (this.weaponModel) { this.camera.remove(this.weaponModel); this.weaponModel = null; }
     const def = WEAPONS[id];
-    const group = new THREE.Group();
-
-    // Skin-toned hands
-    const handMat = new THREE.MeshStandardMaterial({ color: 0xd9a67a, roughness: 0.8 });
-    const forearmGeo = new THREE.BoxGeometry(0.08, 0.08, 0.35);
-    const leftHand = new THREE.Mesh(forearmGeo, handMat);
-    leftHand.position.set(-0.05, -0.02, -0.12);
-    const rightHand = new THREE.Mesh(forearmGeo, handMat);
-    rightHand.position.set(0.08, -0.02, -0.05);
-    group.add(leftHand, rightHand);
-
-    // Weapon by type
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 });
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b3a1a, roughness: 0.7 });
-
-    if (def.grenade === 'flash') {
-      const g = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0xbbbbbb }));
-      g.position.set(0.06, -0.02, -0.15); group.add(g);
-    } else if (def.grenade === 'he') {
-      const g = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0x2a5a2a }));
-      g.position.set(0.06, -0.02, -0.15); group.add(g);
-    } else if (def.id === 'knife') {
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.3), new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.2 }));
-      blade.position.set(0.05, 0, -0.25); group.add(blade);
-    } else {
-      const barrelLen = def.id === 'sniper' ? 1.1 : def.id === 'rifle' || def.id === 'm4' ? 0.75 : 0.5;
-      const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, barrelLen), bodyMat);
-      barrel.position.set(0.05, -0.02, -0.25 - barrelLen / 2 + 0.15);
-      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.08), woodMat);
-      grip.position.set(0.05, -0.12, -0.05);
-      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.09, 0.22), woodMat);
-      stock.position.set(0.05, -0.04, 0.08);
-      group.add(barrel, grip, stock);
-      if (def.id === 'rifle') {
-        const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.12, 0.08), bodyMat);
-        mag.position.set(0.05, -0.13, -0.15);
-        group.add(mag);
-      }
-      if (def.scope) {
-        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.32, 12), bodyMat);
-        scope.rotation.x = Math.PI / 2;
-        scope.position.set(0.05, 0.05, -0.15);
-        group.add(scope);
-      }
-    }
+    if (!def) return;
 
     group.position.set(0.18, -0.25, -0.4);
     this.camera.add(group);
