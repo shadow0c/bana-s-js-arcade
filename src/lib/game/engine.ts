@@ -14,6 +14,7 @@ import {
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
+import { PhysicalReflectiveFloor } from './reflectiveFloor';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
@@ -75,6 +76,10 @@ export class GameEngine {
   private bulletHoles: THREE.Mesh[] = [];
   private grenades: Grenade[] = [];
 
+  private isMobile = false;
+  private reflectiveFloor: PhysicalReflectiveFloor | null = null;
+  private envRenderTarget: THREE.WebGLRenderTarget | null = null;
+
   private lastBroadcastTime = 0;
   private readonly BROADCAST_INTERVAL = 50;
 
@@ -104,8 +109,8 @@ export class GameEngine {
     this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     // Gölge (mobilde performans için kapalı)
-    const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
-    if (!isMobile) {
+    this.isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+    if (!this.isMobile) {
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     }
@@ -203,9 +208,69 @@ export class GameEngine {
     return tex;
   }
 
+  /**
+   * Sahne için PMREM tabanlı, fiziksel olarak makul bir çevre (environment) haritası
+   * üretir. Bu harita, MeshStandardMaterial/MeshPhysicalMaterial yüzeylerinde
+   * (silahlar, yelek, kask, duvarlar) gerçekçi image-based specular yansımalar sağlar —
+   * düz renkli materyallerin aksine, yüzeyler artık gökyüzünü/ortamı "görür".
+   */
+  private buildEnvironmentMap() {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+
+    const topColor = new THREE.Color(COLORS.sky);
+    const bottomColor = new THREE.Color(0xd8b98a); // sıcak kum yansıması
+
+    const gradientGeo = new THREE.SphereGeometry(50, 32, 16);
+    const gradientMat = new THREE.ShaderMaterial({
+      uniforms: {
+        topColor: { value: topColor },
+        bottomColor: { value: bottomColor },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 topColor;
+        uniform vec3 bottomColor;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition).y * 0.5 + 0.5;
+          gl_FragColor = vec4(mix(bottomColor, topColor, clamp(h, 0.0, 1.0)), 1.0);
+        }
+      `,
+      side: THREE.BackSide,
+    });
+    const gradientSky = new THREE.Mesh(gradientGeo, gradientMat);
+    envScene.add(gradientSky);
+
+    // Yönlü ışıkla eşleşen, parlak yüzeylerde belirgin bir specular vurgu oluşturan güneş
+    const sunGeo = new THREE.SphereGeometry(4, 16, 16);
+    const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff2c8 });
+    const sun = new THREE.Mesh(sunGeo, sunMat);
+    sun.position.set(28, 40, 18);
+    envScene.add(sun);
+
+    const rt = pmrem.fromScene(envScene, 0.035);
+    this.scene.environment = rt.texture;
+    this.envRenderTarget = rt;
+
+    pmrem.dispose();
+    gradientGeo.dispose();
+    gradientMat.dispose();
+    sunGeo.dispose();
+    sunMat.dispose();
+  }
+
   private setupScene() {
     this.scene.background = new THREE.Color(COLORS.sky);
     this.scene.fog = new THREE.Fog(COLORS.sky, 40, 160);
+    this.buildEnvironmentMap();
 
     // Ortam ışığı (AO benzeri yumuşak)
     const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.55);
@@ -233,7 +298,12 @@ export class GameEngine {
     const floorTex = this.makeCanvasTexture('floor');
     floorTex.repeat.set(30, 30);
     const floorGeo = new THREE.PlaneGeometry(120, 120);
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.98 });
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: floorTex,
+      roughness: 0.94,
+      metalness: 0.05,
+      envMapIntensity: 0.5,
+    });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
@@ -241,13 +311,38 @@ export class GameEngine {
     this.scene.add(floor);
     this.wallMeshes.push(floor);
 
+    // Gerçek zamanlı, fiziksel (Fresnel) düzlemsel zemin yansıması.
+    // Sahneyi bir ayna gibi ayrı render eder ve bakış açısına göre kum dokusuyla
+    // harmanlar: tepeden bakışta neredeyse görünmez, sıyırma açısında belirgindir —
+    // masraflı olduğu için mobilde performans adına devre dışı bırakılır.
+    if (!this.isMobile) {
+      const reflectionRes = Math.round(512 * Math.min(window.devicePixelRatio, 1.5));
+      this.reflectiveFloor = new PhysicalReflectiveFloor({
+        size: 120,
+        diffuseMap: floorTex,
+        repeat: { x: 30, y: 30 },
+        textureWidth: reflectionRes,
+        textureHeight: reflectionRes,
+        multisample: 4,
+        tintColor: 0xd7cdb8,
+        baseReflectivity: 0.06,
+      });
+      this.reflectiveFloor.rotation.x = -Math.PI / 2;
+      this.reflectiveFloor.position.y = 0.015; // z-fighting'i önlemek için hafif yukarıda
+      this.scene.add(this.reflectiveFloor);
+    }
+
     // Duvarlar - prosedürel doku
     for (const box of MAP_WALLS) {
       const useCrate = box.w <= 6 && box.d <= 6 && box.h <= 2.5;
       const tex = this.makeCanvasTexture(useCrate ? 'crate' : 'wall');
       if (!useCrate) tex.repeat.set(Math.max(1, box.w / 3), Math.max(1, box.h / 3));
       const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
-      const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
+      const mat = new THREE.MeshStandardMaterial(
+        useCrate
+          ? { map: tex, roughness: 0.85, metalness: 0.02, envMapIntensity: 0.15 } // ahşap - az yansıtıcı
+          : { map: tex, roughness: 0.82, metalness: 0.06, envMapIntensity: 0.45 }, // kum taşı - hafif parlak
+      );
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(box.x, box.h / 2, box.z);
       mesh.castShadow = true;
@@ -435,6 +530,8 @@ export class GameEngine {
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('resize', this.onResize);
+    this.reflectiveFloor?.disposeFloor();
+    this.envRenderTarget?.dispose();
     this.renderer.dispose();
   }
 
@@ -804,10 +901,18 @@ export class GameEngine {
     if (this.remotePlayers.has(state.id)) return;
     const group = new THREE.Group();
     const teamColor = state.team === 't' ? COLORS.t : COLORS.ct;
-    const uniformMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.7 });
-    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9 });
-    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b088, roughness: 0.85 });
-    const vestMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6 });
+    const uniformMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.75, metalness: 0.0, envMapIntensity: 0.15 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.88, metalness: 0.0, envMapIntensity: 0.1 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b088, roughness: 0.85, metalness: 0.0, envMapIntensity: 0.08 });
+    // Taktik yelek: yarı-sert polimer görünümü için clearcoat (üstte ince, pürüzsüz bir kaplama) kullanılır
+    const vestMat = new THREE.MeshPhysicalMaterial({
+      color: 0x1a1a1a,
+      roughness: 0.45,
+      metalness: 0.15,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.3,
+      envMapIntensity: 0.8,
+    });
 
     // Bacaklar
     const legGeo = new THREE.BoxGeometry(0.22, 0.85, 0.22);
@@ -835,7 +940,12 @@ export class GameEngine {
     // Kask
     const helmet = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.14, 0.34),
-      new THREE.MeshStandardMaterial({ color: state.team === 't' ? 0x552211 : 0x1a2f5a, roughness: 0.5 }),
+      new THREE.MeshStandardMaterial({
+        color: state.team === 't' ? 0x552211 : 0x1a2f5a,
+        roughness: 0.4,
+        metalness: 0.35,
+        envMapIntensity: 0.9,
+      }),
     );
     helmet.position.y = 1.9; helmet.userData.playerId = state.id;
 
@@ -844,7 +954,7 @@ export class GameEngine {
     // Silah
     const weaponMesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.1, 0.65),
-      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.6, roughness: 0.4 }),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.75, roughness: 0.28, envMapIntensity: 1.1 }),
     );
     weaponMesh.position.set(0.28, 1.2, 0.35);
     weaponMesh.userData.playerId = state.id;
@@ -893,4 +1003,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-}
+        }
