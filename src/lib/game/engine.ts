@@ -145,48 +145,109 @@ export class GameEngine {
     };
   }
 
+  private makeCanvasTexture(kind: 'floor' | 'wall' | 'crate'): THREE.CanvasTexture {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    if (kind === 'floor') {
+      // Kum/toprak - dust2 zemini
+      ctx.fillStyle = '#c9a878';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 3000; i++) {
+        const x = Math.random() * size, y = Math.random() * size;
+        const v = Math.random() * 40 - 20;
+        ctx.fillStyle = `rgba(${139 + v},${115 + v},${75 + v},0.5)`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+    } else if (kind === 'wall') {
+      // Kum taş duvar
+      ctx.fillStyle = '#a08052';
+      ctx.fillRect(0, 0, size, size);
+      const bw = 64, bh = 32;
+      for (let y = 0; y < size; y += bh) {
+        const off = (y / bh) % 2 === 0 ? 0 : bw / 2;
+        for (let x = -bw; x < size; x += bw) {
+          ctx.fillStyle = `hsl(${25 + Math.random() * 10}, ${35 + Math.random() * 15}%, ${45 + Math.random() * 15}%)`;
+          ctx.fillRect(x + off, y, bw - 2, bh - 2);
+        }
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1;
+      for (let y = 0; y < size; y += bh) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+      }
+    } else {
+      // Ahşap kutu
+      ctx.fillStyle = '#7a4a1e';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 12; i++) {
+        ctx.strokeStyle = `rgba(0,0,0,${0.15 + Math.random() * 0.2})`;
+        ctx.lineWidth = 1 + Math.random() * 2;
+        ctx.beginPath();
+        ctx.moveTo(0, i * 22 + Math.random() * 5);
+        ctx.bezierCurveTo(size / 3, i * 22, (size * 2) / 3, i * 22 + 8, size, i * 22 + Math.random() * 5);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#3a1f08';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(0, 0, size, size);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
   private setupScene() {
     this.scene.background = new THREE.Color(COLORS.sky);
     this.scene.fog = new THREE.Fog(COLORS.sky, 40, 160);
 
-    const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.7);
+    // Ortam ışığı (AO benzeri yumuşak)
+    const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.55);
     this.scene.add(hemiLight);
-    const dirLight = new THREE.DirectionalLight(0xffe4b5, 1.1);
-    dirLight.position.set(40, 90, 30);
+    const ambient = new THREE.AmbientLight(0x6b5a44, 0.25);
+    this.scene.add(ambient);
+
+    // Yönlü ışık + gölge
+    const dirLight = new THREE.DirectionalLight(0xffe4b5, 1.4);
+    dirLight.position.set(45, 100, 30);
+    dirLight.castShadow = this.renderer.shadowMap.enabled;
+    if (dirLight.castShadow) {
+      dirLight.shadow.mapSize.set(1024, 1024);
+      dirLight.shadow.camera.near = 5;
+      dirLight.shadow.camera.far = 200;
+      dirLight.shadow.camera.left = -70;
+      dirLight.shadow.camera.right = 70;
+      dirLight.shadow.camera.top = 70;
+      dirLight.shadow.camera.bottom = -70;
+      dirLight.shadow.bias = -0.0005;
+    }
     this.scene.add(dirLight);
 
-    const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
-
-    // Floor with texture
-    const floorTex = loader.load(TEXTURES.floor);
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(20, 20);
+    // Floor - prosedürel doku
+    const floorTex = this.makeCanvasTexture('floor');
+    floorTex.repeat.set(30, 30);
     const floorGeo = new THREE.PlaneGeometry(120, 120);
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, color: COLORS.floor, roughness: 0.95 });
+    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.98 });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
     floor.userData.isWall = true;
     this.scene.add(floor);
     this.wallMeshes.push(floor);
 
-    // Walls with brick texture
-    const wallTex = loader.load(TEXTURES.wall);
-    wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
-    const crateTex = loader.load(TEXTURES.crate);
-
+    // Duvarlar - prosedürel doku
     for (const box of MAP_WALLS) {
-      const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
       const useCrate = box.w <= 6 && box.d <= 6 && box.h <= 2.5;
-      const tex = useCrate ? crateTex : wallTex.clone();
-      if (!useCrate) {
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(Math.max(1, box.w / 2), Math.max(1, box.h / 2));
-        tex.needsUpdate = true;
-      }
-      const mat = new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff, roughness: 0.85 });
+      const tex = this.makeCanvasTexture(useCrate ? 'crate' : 'wall');
+      if (!useCrate) tex.repeat.set(Math.max(1, box.w / 3), Math.max(1, box.h / 3));
+      const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
+      const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(box.x, box.h / 2, box.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       mesh.userData.isWall = true;
       this.scene.add(mesh);
       this.wallMeshes.push(mesh);
