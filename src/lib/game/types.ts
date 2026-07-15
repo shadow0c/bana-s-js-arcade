@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import type { TransformNode, Mesh } from '@babylonjs/core';
 
 export type Team = 't' | 'ct';
 
@@ -30,9 +30,9 @@ export interface RemotePlayer {
   id: string;
   name: string;
   team: Team;
-  mesh: THREE.Group;
-  weaponMesh: THREE.Mesh;
-  targetPosition: THREE.Vector3;
+  root: TransformNode;
+  weaponGroup: TransformNode;
+  targetPosition: Vector3Like;
   targetRotation: { x: number; y: number };
   state: PlayerState;
 }
