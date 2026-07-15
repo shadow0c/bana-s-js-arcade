@@ -1,41 +1,20 @@
-import {
-  Engine,
-  Scene,
-  FreeCamera,
-  HemisphericLight,
-  DirectionalLight,
-  Vector3,
-  Color3,
-  Color4,
-  MeshBuilder,
-  StandardMaterial,
-  Mesh,
-  Ray,
-  Quaternion,
-} from '@babylonjs/core';
-import { HavokPlugin } from '@babylonjs/core/Physics/v2/Plugins/havokPlugin';
-import HavokPhysics from '@babylonjs/havok';
-import type { PhysicsBody } from '@babylonjs/core';
+import * as THREE from 'three';
 import {
   WEAPONS,
   DEFAULT_WEAPON,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   PLAYER_SPEED,
-  JUMP_FORCE,
-  GRAVITY,
   MOUSE_SENSITIVITY,
   MAP_WALLS,
   MAP_BOUNDS,
   COLORS,
   MAX_HEALTH,
   RESPAWN_TIME,
-  BOMBSITES,
-  SPAWN_POINTS,
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
-import { createCharacterModel, setWeaponPose, type CharacterParts } from './characterModel';
+import { PhysicalReflectiveFloor } from './reflectiveFloor';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
@@ -46,18 +25,18 @@ export interface GameEngineCallbacks {
 }
 
 interface Grenade {
-  mesh: Mesh;
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
   type: 'flash' | 'he';
   detonateAt: number;
-  velocity: Vector3;
 }
 
 export class GameEngine {
   private canvas: HTMLCanvasElement;
-  private engine: Engine;
-  private scene: Scene;
-  private camera: FreeCamera;
-  private havokPlugin: HavokPlugin | null = null;
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private raycaster: THREE.Raycaster;
 
   private playerId: string;
   private playerName: string;
@@ -65,6 +44,7 @@ export class GameEngine {
   private callbacks: GameEngineCallbacks;
 
   private state: PlayerState;
+  private direction = new THREE.Vector3();
   private moveForward = false;
   private moveBackward = false;
   private moveLeft = false;
@@ -75,32 +55,38 @@ export class GameEngine {
   private isReloading = false;
   private isScoped = false;
   private mouseLocked = false;
-  private isOnGround = true;
-  private verticalVelocity = 0;
 
+  // Mobile touch state
   private touchMove = { x: 0, y: 0 };
   private mobileFire = false;
   private mobileAim = false;
 
   private yaw = 0;
   private pitch = 0;
+  // Recoil (tepme birikimi & toparlanma)
   private recoilPitch = 0;
   private recoilYaw = 0;
   private consecutiveShots = 0;
   private lastFireGap = 0;
 
+  private weaponModel: THREE.Group | null = null;
   private remotePlayers = new Map<string, RemotePlayer>();
-  private remoteParts = new Map<string, CharacterParts>();
-  private colliders: { min: Vector3; max: Vector3 }[] = [];
-  private wallMeshes: Mesh[] = [];
-  private bulletHoles: Mesh[] = [];
+  private colliders: THREE.Box3[] = [];
+  private wallMeshes: THREE.Mesh[] = [];
+  private bulletHoles: THREE.Mesh[] = [];
   private grenades: Grenade[] = [];
-  private tracers: Mesh[] = [];
 
   private isMobile = false;
+  private reflectiveFloor: PhysicalReflectiveFloor | null = null;
+  private envRenderTarget: THREE.WebGLRenderTarget | null = null;
+
   private lastBroadcastTime = 0;
   private readonly BROADCAST_INTERVAL = 50;
 
+  private tracers: THREE.Line[] = [];
+
+  private rafId: number | null = null;
+  private lastTime = performance.now();
   private isRunning = false;
 
   constructor(
@@ -117,17 +103,23 @@ export class GameEngine {
     this.callbacks = callbacks;
     this.state = this.createInitialState();
 
-    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
-    this.scene = new Scene(this.engine);
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.05, 500);
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Gölge (mobilde performans için kapalı)
     this.isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+    if (!this.isMobile) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.raycaster = new THREE.Raycaster();
 
-    this.camera = new FreeCamera('player_cam', new Vector3(0, PLAYER_HEIGHT, 0), this.scene);
-    this.camera.minZ = 0.05;
-    this.camera.maxZ = 500;
-    this.camera.fov = 1.0472;
-    this.camera.rotationQuaternion = Quaternion.Identity();
-
-    void this.setupScene();
+    this.setupScene();
     this.setupControls();
     this.equipWeapon(DEFAULT_WEAPON);
   }
@@ -153,131 +145,257 @@ export class GameEngine {
   }
 
   private getSpawnPoint(): Vector3Like {
-    const points = SPAWN_POINTS[this.team];
-    const base = points[Math.floor(Math.random() * points.length)];
+    // T spawn = sol alt (B tarafı), CT spawn = sağ üst (A tarafı)
+    const base = this.team === 't' ? { x: -45, z: -45 } : { x: 45, z: 45 };
     return {
-      x: base.x + (Math.random() - 0.5) * 4,
+      x: base.x + (Math.random() - 0.5) * 8,
       y: PLAYER_HEIGHT,
-      z: base.z + (Math.random() - 0.5) * 4,
+      z: base.z + (Math.random() - 0.5) * 8,
     };
   }
 
-  private async setupScene() {
-    this.scene.clearColor = new Color4(
-      ((COLORS.sky >> 16) & 0xff) / 255,
-      ((COLORS.sky >> 8) & 0xff) / 255,
-      (COLORS.sky & 0xff) / 255,
-      1,
-    );
-    this.scene.fogMode = Scene.FOGMODE_LINEAR;
-    this.scene.fogColor = new Color3(
-      ((COLORS.sky >> 16) & 0xff) / 255,
-      ((COLORS.sky >> 8) & 0xff) / 255,
-      (COLORS.sky & 0xff) / 255,
-    );
-    this.scene.fogStart = 40;
-    this.scene.fogEnd = 160;
-
-    try {
-      const havok = await HavokPhysics();
-      this.havokPlugin = new HavokPlugin(true, havok);
-      this.scene.enablePhysics(new Vector3(0, GRAVITY, 0), this.havokPlugin);
-    } catch (e) {
-      console.warn('Havok init failed, using manual physics', e);
+  private makeCanvasTexture(kind: 'floor' | 'wall' | 'crate'): THREE.CanvasTexture {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    if (kind === 'floor') {
+      // Kum/toprak - dust2 zemini
+      ctx.fillStyle = '#c9a878';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 3000; i++) {
+        const x = Math.random() * size, y = Math.random() * size;
+        const v = Math.random() * 40 - 20;
+        ctx.fillStyle = `rgba(${139 + v},${115 + v},${75 + v},0.5)`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+    } else if (kind === 'wall') {
+      // Kum taş duvar
+      ctx.fillStyle = '#a08052';
+      ctx.fillRect(0, 0, size, size);
+      const bw = 64, bh = 32;
+      for (let y = 0; y < size; y += bh) {
+        const off = (y / bh) % 2 === 0 ? 0 : bw / 2;
+        for (let x = -bw; x < size; x += bw) {
+          ctx.fillStyle = `hsl(${25 + Math.random() * 10}, ${35 + Math.random() * 15}%, ${45 + Math.random() * 15}%)`;
+          ctx.fillRect(x + off, y, bw - 2, bh - 2);
+        }
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1;
+      for (let y = 0; y < size; y += bh) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+      }
+    } else {
+      // Ahşap kutu
+      ctx.fillStyle = '#7a4a1e';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 12; i++) {
+        ctx.strokeStyle = `rgba(0,0,0,${0.15 + Math.random() * 0.2})`;
+        ctx.lineWidth = 1 + Math.random() * 2;
+        ctx.beginPath();
+        ctx.moveTo(0, i * 22 + Math.random() * 5);
+        ctx.bezierCurveTo(size / 3, i * 22, (size * 2) / 3, i * 22 + 8, size, i * 22 + Math.random() * 5);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#3a1f08';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(0, 0, size, size);
     }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
 
-    const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), this.scene);
-    hemi.intensity = 0.6;
-    hemi.groundColor = new Color3(0.5, 0.4, 0.3);
+  /**
+   * Sahne için PMREM tabanlı, fiziksel olarak makul bir çevre (environment) haritası
+   * üretir. Bu harita, MeshStandardMaterial/MeshPhysicalMaterial yüzeylerinde
+   * (silahlar, yelek, kask, duvarlar) gerçekçi image-based specular yansımalar sağlar —
+   * düz renkli materyallerin aksine, yüzeyler artık gökyüzünü/ortamı "görür".
+   */
+  private buildEnvironmentMap() {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
 
-    const dirLight = new DirectionalLight('dir', new Vector3(-0.5, -1, -0.3), this.scene);
-    dirLight.intensity = 1.0;
-    dirLight.diffuse = new Color3(1, 0.95, 0.8);
+    const topColor = new THREE.Color(COLORS.sky);
+    const bottomColor = new THREE.Color(0xd8b98a); // sıcak kum yansıması
 
-    const floorMat = new StandardMaterial('floor_mat', this.scene);
-    floorMat.diffuseColor = Color3.FromInts(
-      (COLORS.floor >> 16) & 0xff,
-      (COLORS.floor >> 8) & 0xff,
-      COLORS.floor & 0xff,
-    );
-    const floor = MeshBuilder.CreateGround('floor', { width: 122, height: 122 }, this.scene);
-    floor.material = floorMat;
-    floor.metadata = { isWall: true };
+    const gradientGeo = new THREE.SphereGeometry(50, 32, 16);
+    const gradientMat = new THREE.ShaderMaterial({
+      uniforms: {
+        topColor: { value: topColor },
+        bottomColor: { value: bottomColor },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 topColor;
+        uniform vec3 bottomColor;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition).y * 0.5 + 0.5;
+          gl_FragColor = vec4(mix(bottomColor, topColor, clamp(h, 0.0, 1.0)), 1.0);
+        }
+      `,
+      side: THREE.BackSide,
+    });
+    const gradientSky = new THREE.Mesh(gradientGeo, gradientMat);
+    envScene.add(gradientSky);
+
+    // Yönlü ışıkla eşleşen, parlak yüzeylerde belirgin bir specular vurgu oluşturan güneş
+    const sunGeo = new THREE.SphereGeometry(4, 16, 16);
+    const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff2c8 });
+    const sun = new THREE.Mesh(sunGeo, sunMat);
+    sun.position.set(28, 40, 18);
+    envScene.add(sun);
+
+    const rt = pmrem.fromScene(envScene, 0.035);
+    this.scene.environment = rt.texture;
+    this.envRenderTarget = rt;
+
+    pmrem.dispose();
+    gradientGeo.dispose();
+    gradientMat.dispose();
+    sunGeo.dispose();
+    sunMat.dispose();
+  }
+
+  private setupScene() {
+    this.scene.background = new THREE.Color(COLORS.sky);
+    this.scene.fog = new THREE.Fog(COLORS.sky, 40, 160);
+    this.buildEnvironmentMap();
+
+    // Ortam ışığı (AO benzeri yumuşak)
+    const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.55);
+    this.scene.add(hemiLight);
+    const ambient = new THREE.AmbientLight(0x6b5a44, 0.25);
+    this.scene.add(ambient);
+
+    // Yönlü ışık + gölge
+    const dirLight = new THREE.DirectionalLight(0xffe4b5, 1.4);
+    dirLight.position.set(45, 100, 30);
+    dirLight.castShadow = this.renderer.shadowMap.enabled;
+    if (dirLight.castShadow) {
+      dirLight.shadow.mapSize.set(1024, 1024);
+      dirLight.shadow.camera.near = 5;
+      dirLight.shadow.camera.far = 200;
+      dirLight.shadow.camera.left = -70;
+      dirLight.shadow.camera.right = 70;
+      dirLight.shadow.camera.top = 70;
+      dirLight.shadow.camera.bottom = -70;
+      dirLight.shadow.bias = -0.0005;
+    }
+    this.scene.add(dirLight);
+
+    // Floor - prosedürel doku
+    const floorTex = this.makeCanvasTexture('floor');
+    floorTex.repeat.set(30, 30);
+    const floorGeo = new THREE.PlaneGeometry(120, 120);
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: floorTex,
+      roughness: 0.94,
+      metalness: 0.05,
+      envMapIntensity: 0.5,
+    });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.userData.isWall = true;
+    this.scene.add(floor);
     this.wallMeshes.push(floor);
 
-    for (const box of MAP_WALLS) {
-      const isCrate = box.w <= 6 && box.d <= 6 && box.h <= 2.5;
-      const mat = new StandardMaterial(`wall_${box.x}_${box.z}`, this.scene);
-      const color = isCrate ? COLORS.crate : COLORS.wall;
-      mat.diffuseColor = Color3.FromInts((color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff);
-      if (!isCrate) mat.diffuseColor = mat.diffuseColor.scale(0.85);
-
-      const mesh = MeshBuilder.CreateBox(`wall_${box.x}_${box.z}`, {
-        width: box.w, height: box.h, depth: box.d,
-      }, this.scene);
-      mesh.material = mat;
-      mesh.position.set(box.x, box.h / 2, box.z);
-      mesh.metadata = { isWall: true };
-      this.wallMeshes.push(mesh);
-
-      this.colliders.push({
-        min: new Vector3(box.x - box.w / 2, 0, box.z - box.d / 2),
-        max: new Vector3(box.x + box.w / 2, box.h, box.z + box.d / 2),
+    // Gerçek zamanlı, fiziksel (Fresnel) düzlemsel zemin yansıması.
+    // Sahneyi bir ayna gibi ayrı render eder ve bakış açısına göre kum dokusuyla
+    // harmanlar: tepeden bakışta neredeyse görünmez, sıyırma açısında belirgindir —
+    // masraflı olduğu için mobilde performans adına devre dışı bırakılır.
+    if (!this.isMobile) {
+      const reflectionRes = Math.round(512 * Math.min(window.devicePixelRatio, 1.5));
+      this.reflectiveFloor = new PhysicalReflectiveFloor({
+        size: 120,
+        diffuseMap: floorTex,
+        repeat: { x: 30, y: 30 },
+        textureWidth: reflectionRes,
+        textureHeight: reflectionRes,
+        multisample: 4,
+        tintColor: 0xd7cdb8,
+        baseReflectivity: 0.06,
       });
+      this.reflectiveFloor.rotation.x = -Math.PI / 2;
+      this.reflectiveFloor.position.y = 0.015; // z-fighting'i önlemek için hafif yukarıda
+      this.scene.add(this.reflectiveFloor);
     }
 
-    for (const site of BOMBSITES) {
-      const ring = MeshBuilder.CreateTorus(`site_${site.label}`, {
-        diameter: 7, thickness: 0.5, tessellation: 32,
-      }, this.scene);
-      ring.position.set(site.x, 0.02, site.z);
-      ring.rotation.x = Math.PI / 2;
-      const ringMat = new StandardMaterial(`site_mat_${site.label}`, this.scene);
-      ringMat.emissiveColor = Color3.FromInts(
-        (site.color >> 16) & 0xff, (site.color >> 8) & 0xff, site.color & 0xff,
+    // Duvarlar - prosedürel doku
+    for (const box of MAP_WALLS) {
+      const useCrate = box.w <= 6 && box.d <= 6 && box.h <= 2.5;
+      const tex = this.makeCanvasTexture(useCrate ? 'crate' : 'wall');
+      if (!useCrate) tex.repeat.set(Math.max(1, box.w / 3), Math.max(1, box.h / 3));
+      const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
+      const mat = new THREE.MeshStandardMaterial(
+        useCrate
+          ? { map: tex, roughness: 0.85, metalness: 0.02, envMapIntensity: 0.15 } // ahşap - az yansıtıcı
+          : { map: tex, roughness: 0.82, metalness: 0.06, envMapIntensity: 0.45 }, // kum taşı - hafif parlak
       );
-      ringMat.alpha = 0.6;
-      ring.material = ringMat;
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(box.x, box.h / 2, box.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.isWall = true;
+      this.scene.add(mesh);
+      this.wallMeshes.push(mesh);
+      this.colliders.push(new THREE.Box3().setFromObject(mesh));
     }
+
+    // Bombsite markers (A / B)
+    const makeSite = (label: 'A' | 'B', x: number, z: number, color: number) => {
+      const g = new THREE.RingGeometry(3, 3.5, 32);
+      const m = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+      const ring = new THREE.Mesh(g, m);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.02, z);
+      this.scene.add(ring);
+      void label;
+    };
+    makeSite('A', 30, 35, 0xff4444);
+    makeSite('B', -30, -35, 0x44ff44);
 
     const spawn = this.state.position;
     this.camera.position.set(spawn.x, spawn.y, spawn.z);
+    this.camera.rotation.order = 'YXZ';
+    // face map center
     this.yaw = Math.atan2(-spawn.x, -spawn.z);
-    this.updateCameraRotation();
-  }
-
-  private updateCameraRotation() {
-    this.camera.rotationQuaternion = Quaternion.FromEulerAngles(this.pitch, this.yaw, 0);
+    this.camera.rotation.y = this.yaw;
   }
 
   private setupControls() {
-    this.scene.onPointerObservable.add((pi) => {
-      if (pi.type === 1) { // POINTERDOWN
-        const evt = pi.event as MouseEvent;
-        if (evt.button === 0) { this.isShooting = true; this.tryShoot(); }
-        else if (evt.button === 2) { this.toggleScope(true); }
-      } else if (pi.type === 2) { // POINTERUP
-        const evt = pi.event as MouseEvent;
-        if (evt.button === 0) { this.isShooting = false; }
-        else if (evt.button === 2) { this.toggleScope(false); }
-      }
-    });
-
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
-    window.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('keydown', this.onKeyDown);
+    document.addEventListener('keyup', this.onKeyUp);
+    document.addEventListener('mousedown', this.onMouseDown);
+    document.addEventListener('mouseup', this.onMouseUp);
+    document.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('resize', this.onResize);
 
     this.canvas.addEventListener('click', () => {
+      // Mobil cihazlarda pointer lock istemiyoruz
       const isTouch = window.matchMedia('(pointer: coarse)').matches;
       if (!isTouch && !this.mouseLocked && !this.state.isDead) {
         this.canvas.requestPointerLock();
       }
     });
-
-    document.addEventListener('pointerlockchange', this.onPointerLockChange);
-    document.addEventListener('contextmenu', (e) => e.preventDefault());
   }
+
+  private onContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+  };
 
   private onPointerLockChange = () => {
     this.mouseLocked = document.pointerLockElement === this.canvas;
@@ -288,7 +406,8 @@ export class GameEngine {
     this.yaw -= e.movementX * MOUSE_SENSITIVITY;
     this.pitch -= e.movementY * MOUSE_SENSITIVITY;
     this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
-    this.updateCameraRotation();
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
     this.state.rotation = { x: this.pitch, y: this.yaw };
   };
 
@@ -299,10 +418,7 @@ export class GameEngine {
       case 'KeyA': this.moveLeft = true; break;
       case 'KeyS': this.moveBackward = true; break;
       case 'KeyD': this.moveRight = true; break;
-      case 'Space':
-        e.preventDefault();
-        if (this.isOnGround) { this.verticalVelocity = JUMP_FORCE; this.isOnGround = false; }
-        break;
+      case 'Space': e.preventDefault(); break;
       case 'KeyR': this.reload(); break;
       case 'Digit1': this.setWeapon('pistol'); break;
       case 'Digit2': this.setWeapon('rifle'); break;
@@ -322,32 +438,70 @@ export class GameEngine {
     }
   };
 
-  private onResize = () => { this.engine.resize(); };
+  private onMouseDown = (e: MouseEvent) => {
+    if (e.button === 0) {
+      this.isShooting = true;
+      this.tryShoot();
+    } else if (e.button === 2) {
+      this.isScoped = true;
+    }
+  };
 
-  private toggleScope(v: boolean) {
-    this.isScoped = v;
-    if (!v) this.camera.fov = 1.0472;
-  }
+  private onMouseUp = (e: MouseEvent) => {
+    if (e.button === 0) {
+      this.isShooting = false;
+    } else if (e.button === 2) {
+      this.isScoped = false;
+      this.camera.fov = 75;
+      this.camera.updateProjectionMatrix();
+    }
+  };
 
-  // ============ MOBILE API ============
+  private onResize = () => {
+    this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
+  };
+
+  // ============ MOBILE PUBLIC API ============
   public mobileLook(dx: number, dy: number) {
     if (this.state.isDead) return;
     this.yaw -= dx * MOUSE_SENSITIVITY * 2;
     this.pitch -= dy * MOUSE_SENSITIVITY * 2;
     this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
-    this.updateCameraRotation();
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
     this.state.rotation = { x: this.pitch, y: this.yaw };
   }
-  public mobileMove(x: number, y: number) { this.touchMove.x = x; this.touchMove.y = y; }
-  public mobileSetFire(v: boolean) { this.mobileFire = v; this.isShooting = v; if (v) this.tryShoot(); }
-  public mobileSetAim(v: boolean) { this.mobileAim = v; this.toggleScope(v); }
+  public mobileMove(x: number, y: number) {
+    this.touchMove.x = x;
+    this.touchMove.y = y;
+  }
+  public mobileSetFire(v: boolean) {
+    this.mobileFire = v;
+    this.isShooting = v;
+    if (v) this.tryShoot();
+  }
+  public mobileSetAim(v: boolean) {
+    this.mobileAim = v;
+    this.isScoped = v;
+    if (!v) {
+      this.camera.fov = 75;
+      this.camera.updateProjectionMatrix();
+    }
+  }
   public mobileReload() { this.reload(); }
   public mobileThrow(type: 'flash' | 'he') { this.throwGrenade(type); }
+
   public lockPointer() {
     const isTouch = window.matchMedia('(pointer: coarse)').matches;
     if (!isTouch) this.canvas.requestPointerLock();
   }
-  public unlockPointer() { document.exitPointerLock(); }
+
+  public unlockPointer() {
+    document.exitPointerLock();
+  }
+
   public isLocked() {
     const isTouch = window.matchMedia('(pointer: coarse)').matches;
     return isTouch ? true : this.mouseLocked;
@@ -356,26 +510,39 @@ export class GameEngine {
   public start() {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.engine.runRenderLoop(() => {
-      const now = performance.now();
-      const dt = this.engine.getDeltaTime() / 1000;
-      this.update(dt, now);
-      this.scene.render();
-    });
+    this.lastTime = performance.now();
+    this.loop();
   }
 
-  public stop() { this.isRunning = false; this.engine.stopRenderLoop(); }
+  public stop() {
+    this.isRunning = false;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+  }
 
   public cleanup() {
     this.stop();
     try { this.unlockPointer(); } catch { /* ignore */ }
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
-    window.removeEventListener('mousemove', this.onMouseMove);
-    window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('keydown', this.onKeyDown);
+    document.removeEventListener('keyup', this.onKeyUp);
+    document.removeEventListener('mousedown', this.onMouseDown);
+    document.removeEventListener('mouseup', this.onMouseUp);
+    document.removeEventListener('mousemove', this.onMouseMove);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
-    this.engine.dispose();
+    document.removeEventListener('contextmenu', this.onContextMenu);
+    window.removeEventListener('resize', this.onResize);
+    this.reflectiveFloor?.disposeFloor();
+    this.envRenderTarget?.dispose();
+    this.renderer.dispose();
   }
+
+  private loop = () => {
+    this.rafId = requestAnimationFrame(this.loop);
+    const now = performance.now();
+    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
+    this.lastTime = now;
+    this.update(dt, now);
+    this.renderer.render(this.scene, this.camera);
+  };
 
   private update(dt: number, now: number) {
     if (this.state.isDead) return;
@@ -383,12 +550,14 @@ export class GameEngine {
     this.updateShooting(now);
     this.updateReload(now);
     this.updateRecoilRecovery(dt, now);
+    this.updateWeaponModel(dt);
     this.updateRemotePlayers(dt);
-    this.updateGrenades(now);
+    this.updateGrenades(dt, now);
     this.broadcastStateIfNeeded(now);
   }
 
   private updateRecoilRecovery(dt: number, now: number) {
+    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir
     if (this.isShooting) return;
     if (now - this.lastShotTime < 60) return;
     const recover = Math.min(1, dt * 8);
@@ -396,7 +565,8 @@ export class GameEngine {
     const dy = this.recoilYaw * recover;
     this.pitch -= dp; this.recoilPitch -= dp;
     this.yaw -= dy; this.recoilYaw -= dy;
-    this.updateCameraRotation();
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
     if (Math.abs(this.recoilPitch) < 0.001) this.recoilPitch = 0;
     if (Math.abs(this.recoilYaw) < 0.001) this.recoilYaw = 0;
     if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) this.consecutiveShots = 0;
@@ -405,80 +575,42 @@ export class GameEngine {
   private updateMovement(dt: number) {
     let dz = Number(this.moveForward) - Number(this.moveBackward);
     let dx = Number(this.moveRight) - Number(this.moveLeft);
+    // Touch joystick (y up = forward)
     if (this.touchMove.x !== 0 || this.touchMove.y !== 0) {
       dx += this.touchMove.x;
       dz += -this.touchMove.y;
     }
-
-    const forward = this.camera.getDirection(Vector3.Forward());
-    forward.y = 0; forward.normalize();
-    const right = this.camera.getDirection(Vector3.Right());
-    right.y = 0; right.normalize();
+    this.direction.set(dx, 0, dz);
+    if (this.direction.lengthSq() === 0) return;
+    this.direction.normalize();
 
     const speed = this.isScoped ? PLAYER_SPEED * 0.35 : PLAYER_SPEED;
-    const moveVec = new Vector3(0, 0, 0);
-    if (dz !== 0 || dx !== 0) {
-      const len = Math.hypot(dx, dz);
-      dx /= len; dz /= len;
-      moveVec.addInPlace(forward.scale(dz * speed * dt));
-      moveVec.addInPlace(right.scale(dx * speed * dt));
-    }
+    const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
+    const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
 
-    this.verticalVelocity += GRAVITY * dt;
-    moveVec.y = this.verticalVelocity * dt;
+    const move = new THREE.Vector3()
+      .addScaledVector(forward, this.direction.z * speed * dt)
+      .addScaledVector(right, this.direction.x * speed * dt);
 
-    const nextPos = this.camera.position.add(moveVec);
-    const checkPos = new Vector3(nextPos.x, this.camera.position.y, nextPos.z);
-    if (!this.collides(checkPos)) {
-      this.camera.position.x = nextPos.x;
-      this.camera.position.z = nextPos.z;
-    }
-
-    this.camera.position.y += moveVec.y;
-
-    const groundY = this.getGroundHeight(this.camera.position);
-    if (this.camera.position.y <= groundY + PLAYER_HEIGHT) {
-      this.camera.position.y = groundY + PLAYER_HEIGHT;
-      this.verticalVelocity = 0;
-      this.isOnGround = true;
-    } else {
-      this.isOnGround = false;
-    }
-
-    const r = PLAYER_RADIUS;
-    this.camera.position.x = Math.max(MAP_BOUNDS.minX + r, Math.min(MAP_BOUNDS.maxX - r, this.camera.position.x));
-    this.camera.position.z = Math.max(MAP_BOUNDS.minZ + r, Math.min(MAP_BOUNDS.maxZ - r, this.camera.position.z));
+    const nextPos = this.camera.position.clone();
+    nextPos.x += move.x;
+    if (!this.collides(nextPos)) this.camera.position.x = nextPos.x;
+    nextPos.copy(this.camera.position);
+    nextPos.z += move.z;
+    if (!this.collides(nextPos)) this.camera.position.z = nextPos.z;
+    this.camera.position.y = PLAYER_HEIGHT;
   }
 
-  private collides(pos: Vector3): boolean {
+  private collides(pos: THREE.Vector3): boolean {
     const r = PLAYER_RADIUS;
+    if (pos.x - r < MAP_BOUNDS.minX || pos.x + r > MAP_BOUNDS.maxX ||
+        pos.z - r < MAP_BOUNDS.minZ || pos.z + r > MAP_BOUNDS.maxZ) return true;
     for (const box of this.colliders) {
-      if (
-        pos.x + r > box.min.x && pos.x - r < box.max.x &&
-        pos.z + r > box.min.z && pos.z - r < box.max.z &&
-        pos.y - PLAYER_HEIGHT < box.max.y
-      ) {
-        if (pos.y - PLAYER_HEIGHT >= box.max.y - 0.3) continue;
-        return true;
-      }
+      if (pos.x + r > box.min.x && pos.x - r < box.max.x &&
+          pos.z + r > box.min.z && pos.z - r < box.max.z &&
+          pos.y < box.max.y + 0.1) return true;
     }
     return false;
-  }
-
-  private getGroundHeight(pos: Vector3): number {
-    let groundY = 0;
-    const r = PLAYER_RADIUS * 0.8;
-    for (const box of this.colliders) {
-      if (
-        pos.x + r > box.min.x && pos.x - r < box.max.x &&
-        pos.z + r > box.min.z && pos.z - r < box.max.z
-      ) {
-        if (box.max.y > groundY && box.max.y <= pos.y - PLAYER_HEIGHT + 0.5) {
-          groundY = box.max.y;
-        }
-      }
-    }
-    return groundY;
   }
 
   private updateShooting(now: number) {
@@ -488,20 +620,24 @@ export class GameEngine {
   private tryShoot(now = performance.now()) {
     if (this.state.isDead || this.isReloading) return;
     const weapon = WEAPONS[this.state.weaponId];
-    if (weapon.grenade) return;
+    if (weapon.grenade) return; // fire tuşu granatları atmaz
     if (now - this.lastShotTime < weapon.fireRate) return;
     if (this.state.ammo <= 0) { this.reload(); return; }
 
+    // Otomatik silahda ardışık atışlar için birikim faktörü
     this.lastFireGap = now - this.lastShotTime;
     this.lastShotTime = now;
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
+    // Ateş hızlı geldikçe birikim artar
     if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
     else this.consecutiveShots = 1;
     const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
+    // Scope yaparken tepme yarıya iner
     const scopeMul = this.isScoped ? 0.5 : 1;
 
+    // Dikey tepme (yukarı) + yatay yalpa
     const vert = weapon.recoil * buildUp * scopeMul;
     const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
     this.recoilPitch += vert;
@@ -509,121 +645,142 @@ export class GameEngine {
     this.pitch += vert;
     this.yaw += horiz;
     this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
-    this.updateCameraRotation();
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
 
+    const direction = new THREE.Vector3();
+    this.camera.getWorldDirection(direction);
     const origin = this.camera.position.clone();
-    const direction = this.camera.getDirection(Vector3.Forward());
 
-    const ray = new Ray(origin, direction, weapon.range);
-    const pickInfo = this.scene.pickWithRay(ray, (m) => {
-      const meta = m.metadata;
-      return meta?.isWall === true || (meta?.playerId !== undefined && meta.playerId !== this.playerId);
-    });
+    this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
 
-    let hitPlayerId: string | undefined;
-    let hitPoint = origin.add(direction.scale(weapon.range));
-
-    if (pickInfo?.hit) {
-      hitPoint = pickInfo.pickedPoint ?? hitPoint;
-      const meta = pickInfo.pickedMesh?.metadata as { playerId?: string; isWall?: boolean } | undefined;
-      if (meta?.playerId && meta.playerId !== this.playerId) {
-        hitPlayerId = meta.playerId;
-      } else if (meta?.isWall) {
-        this.addBulletHole(hitPoint, pickInfo.getNormal(true) ?? Vector3.Up());
-      }
+    // First check players
+    const targets: THREE.Object3D[] = [];
+    for (const rp of this.remotePlayers.values()) {
+      rp.mesh.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.userData.playerId = rp.id;
+          targets.push(child);
+        }
+      });
     }
+    const playerHits = this.raycaster.intersectObjects(targets, false);
+    const wallHits = this.raycaster.intersectObjects(this.wallMeshes, false);
 
-    if (hitPlayerId) this.callbacks.onHit(hitPlayerId, weapon.damage);
+    const firstPlayer = playerHits[0];
+    const firstWall = wallHits[0];
+
+    if (firstPlayer && (!firstWall || firstPlayer.distance < firstWall.distance)) {
+      const id = firstPlayer.object.userData.playerId as string | undefined;
+      if (id && id !== this.playerId) {
+        this.callbacks.onHit(id, weapon.damage);
+      }
+    } else if (firstWall) {
+      this.addBulletHole(firstWall.point, firstWall.face?.normal ?? new THREE.Vector3(0, 1, 0), firstWall.object);
+    }
 
     this.callbacks.onShoot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       direction: { x: direction.x, y: direction.y, z: direction.z },
       weaponId: weapon.id,
     });
-    this.spawnTracer(origin, hitPoint);
+    this.spawnTracer(origin, direction);
   }
 
-  private addBulletHole(point: Vector3, normal: Vector3) {
-    const hole = MeshBuilder.CreateDisc(`hole_${Date.now()}`, { radius: 0.08, tessellation: 16 }, this.scene);
-    hole.position.copyFrom(point).addInPlace(normal.scale(0.01));
-    hole.setDirection(normal);
-    const mat = new StandardMaterial(`hole_mat_${Date.now()}`, this.scene);
-    mat.diffuseColor = new Color3(0.07, 0.07, 0.07);
-    mat.emissiveColor = new Color3(0.02, 0.02, 0.02);
-    hole.material = mat;
-    this.bulletHoles.push(hole);
+  private addBulletHole(point: THREE.Vector3, normal: THREE.Vector3, target: THREE.Object3D) {
+    // O şekli — ring geometry
+    const ringGeo = new THREE.RingGeometry(0.05, 0.09, 20);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide, transparent: true, opacity: 0.95 });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    // Convert normal to world space
+    const worldNormal = normal.clone().transformDirection(target.matrixWorld).normalize();
+    ring.position.copy(point).add(worldNormal.clone().multiplyScalar(0.01));
+    // orient ring to face along normal
+    const up = new THREE.Vector3(0, 0, 1);
+    const q = new THREE.Quaternion().setFromUnitVectors(up, worldNormal);
+    ring.quaternion.copy(q);
+    this.scene.add(ring);
+    this.bulletHoles.push(ring);
+    // limit
     if (this.bulletHoles.length > 120) {
       const old = this.bulletHoles.shift();
-      if (old) old.dispose();
+      if (old) this.scene.remove(old);
     }
   }
 
-  private spawnTracer(origin: Vector3, end: Vector3) {
-    const distance = Vector3.Distance(origin, end);
-    if (distance < 0.5) return;
-    const tracer = MeshBuilder.CreateLines(`tracer_${Date.now()}`, { points: [origin, end] }, this.scene);
-    tracer.color = Color3.FromInts(
-      (COLORS.bullet >> 16) & 0xff, (COLORS.bullet >> 8) & 0xff, COLORS.bullet & 0xff,
-    );
-    this.tracers.push(tracer);
+  private spawnTracer(origin: THREE.Vector3, direction: THREE.Vector3) {
+    const start = origin.clone().add(direction.clone().multiplyScalar(0.4));
+    const end = start.clone().add(direction.multiplyScalar(60));
+    const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
+    const mat = new THREE.LineBasicMaterial({ color: COLORS.bullet, transparent: true, opacity: 0.7 });
+    const line = new THREE.Line(geo, mat);
+    this.scene.add(line);
+    this.tracers.push(line);
     setTimeout(() => {
-      tracer.dispose();
-      const idx = this.tracers.indexOf(tracer);
+      this.scene.remove(line);
+      const idx = this.tracers.indexOf(line);
       if (idx > -1) this.tracers.splice(idx, 1);
     }, 80);
   }
 
   private throwGrenade(type: 'flash' | 'he') {
-    const dir = this.camera.getDirection(Vector3.Forward());
-    const mesh = MeshBuilder.CreateSphere(`grenade_${Date.now()}`, { diameter: 0.3, segments: 8 }, this.scene);
-    mesh.position.copyFrom(this.camera.position).addInPlace(dir.scale(0.6));
-    const mat = new StandardMaterial(`grenade_mat_${Date.now()}`, this.scene);
-    mat.diffuseColor = type === 'flash' ? new Color3(0.8, 0.8, 0.8) : new Color3(0.16, 0.35, 0.16);
-    mesh.material = mat;
-
-    const velocity = dir.scale(18);
+    // silaha bakmadan direkt at
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    const geo = new THREE.SphereGeometry(0.15, 12, 12);
+    const mat = new THREE.MeshStandardMaterial({ color: type === 'flash' ? 0xcccccc : 0x2a5a2a });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(this.camera.position).add(dir.clone().multiplyScalar(0.6));
+    this.scene.add(mesh);
+    const velocity = dir.clone().multiplyScalar(18);
     velocity.y += 4;
-    this.grenades.push({ mesh, type, detonateAt: performance.now() + 1800, velocity });
+    this.grenades.push({ mesh, velocity, type, detonateAt: performance.now() + 1800 });
   }
 
-  private updateGrenades(now: number) {
-    const dt = Math.min(this.engine.getDeltaTime() / 1000, 0.05);
+  private updateGrenades(dt: number, now: number) {
+    const gravity = -18;
+    const r = 0.15;
     for (let i = this.grenades.length - 1; i >= 0; i--) {
       const g = this.grenades[i];
-      g.velocity.y += GRAVITY * dt;
+      g.velocity.y += gravity * dt;
       const prev = g.mesh.position.clone();
-      g.mesh.position.addInPlace(g.velocity.scale(dt));
+      g.mesh.position.addScaledVector(g.velocity, dt);
 
-      if (g.mesh.position.y < 0.15) {
-        g.mesh.position.y = 0.15;
+      // Zemin
+      if (g.mesh.position.y < r) {
+        g.mesh.position.y = r;
         g.velocity.y *= -0.4;
         g.velocity.x *= 0.75;
         g.velocity.z *= 0.75;
       }
 
-      const r = 0.15;
+      // Dış harita sınırları
       if (g.mesh.position.x - r < MAP_BOUNDS.minX) { g.mesh.position.x = MAP_BOUNDS.minX + r; g.velocity.x *= -0.5; }
       if (g.mesh.position.x + r > MAP_BOUNDS.maxX) { g.mesh.position.x = MAP_BOUNDS.maxX - r; g.velocity.x *= -0.5; }
       if (g.mesh.position.z - r < MAP_BOUNDS.minZ) { g.mesh.position.z = MAP_BOUNDS.minZ + r; g.velocity.z *= -0.5; }
       if (g.mesh.position.z + r > MAP_BOUNDS.maxZ) { g.mesh.position.z = MAP_BOUNDS.maxZ - r; g.velocity.z *= -0.5; }
 
+      // Duvar AABB çarpışması - kutu yönüne göre sekme
       for (const box of this.colliders) {
         if (
           g.mesh.position.x + r > box.min.x && g.mesh.position.x - r < box.max.x &&
           g.mesh.position.y + r > box.min.y && g.mesh.position.y - r < box.max.y &&
           g.mesh.position.z + r > box.min.z && g.mesh.position.z - r < box.max.z
         ) {
+          // Hangi eksende girildiyse o eksende sek
           const enteredX = prev.x + r <= box.min.x || prev.x - r >= box.max.x;
           const enteredZ = prev.z + r <= box.min.z || prev.z - r >= box.max.z;
+          const enteredY = prev.y + r <= box.min.y || prev.y - r >= box.max.y;
           if (enteredX) { g.mesh.position.x = prev.x; g.velocity.x *= -0.5; }
           else if (enteredZ) { g.mesh.position.z = prev.z; g.velocity.z *= -0.5; }
-          else { g.mesh.position.copyFrom(prev); g.velocity.multiplyInPlace(new Vector3(-0.5, -0.4, -0.5)); }
+          else if (enteredY) { g.mesh.position.y = prev.y; g.velocity.y *= -0.4; }
+          else { g.mesh.position.copy(prev); g.velocity.multiplyScalar(-0.5); }
+          g.velocity.multiplyScalar(0.8);
         }
       }
-
       if (now >= g.detonateAt) {
         this.detonateGrenade(g);
-        g.mesh.dispose();
+        this.scene.remove(g.mesh);
         this.grenades.splice(i, 1);
       }
     }
@@ -632,22 +789,25 @@ export class GameEngine {
   private detonateGrenade(g: Grenade) {
     if (g.type === 'flash') {
       gameAudio.flashBang();
-      const dist = Vector3.Distance(g.mesh.position, this.camera.position);
+      const dist = g.mesh.position.distanceTo(this.camera.position);
       if (dist < 15) {
         const duration = Math.max(500, 2500 - dist * 120);
         this.callbacks.onFlash?.(duration);
       }
     } else {
       gameAudio.explosion();
-      const dist = Vector3.Distance(g.mesh.position, this.camera.position);
-      if (dist < 6) this.takeDamage(Math.round(80 * (1 - dist / 6)), this.playerId);
-      const puff = MeshBuilder.CreateSphere(`puff_${Date.now()}`, { diameter: 3, segments: 12 }, this.scene);
-      puff.position.copyFrom(g.mesh.position);
-      const mat = new StandardMaterial(`puff_mat_${Date.now()}`, this.scene);
-      mat.diffuseColor = new Color3(1, 0.6, 0.27);
-      mat.alpha = 0.7;
-      puff.material = mat;
-      setTimeout(() => puff.dispose(), 250);
+      // HE — damage self if close, and remote via hit events
+      const dist = g.mesh.position.distanceTo(this.camera.position);
+      if (dist < 6) {
+        this.takeDamage(Math.round(80 * (1 - dist / 6)), this.playerId);
+      }
+      // burst puff
+      const geo = new THREE.SphereGeometry(1.5, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xff9944, transparent: true, opacity: 0.7 });
+      const puff = new THREE.Mesh(geo, mat);
+      puff.position.copy(g.mesh.position);
+      this.scene.add(puff);
+      setTimeout(() => this.scene.remove(puff), 250);
     }
   }
 
@@ -668,8 +828,12 @@ export class GameEngine {
   }
 
   private equipWeapon(id: string) {
+    // 3D silah modeli kaldırıldı — HUD gerçekçi 2D silah görselini gösteriyor.
+    if (this.weaponModel) { this.camera.remove(this.weaponModel); this.weaponModel = null; }
     const def = WEAPONS[id];
     if (!def) return;
+
+    if (!this.camera.parent) this.scene.add(this.camera); // ensure attached
     this.state.weaponId = id;
     this.state.ammo = def.clipSize;
     this.state.maxAmmo = def.clipSize;
@@ -679,6 +843,15 @@ export class GameEngine {
   public setWeapon(id: string) {
     if (!WEAPONS[id] || this.state.weaponId === id) return;
     this.equipWeapon(id);
+  }
+
+  private updateWeaponModel(dt: number) {
+    // Scope FOV lerp (silah 2D HUD'da)
+    const targetFov = this.isScoped && WEAPONS[this.state.weaponId].scope ? 22 : 75;
+    if (Math.abs(this.camera.fov - targetFov) > 0.1) {
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, dt * 12);
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   public takeDamage(amount: number, sourceId: string) {
@@ -701,11 +874,11 @@ export class GameEngine {
     this.camera.position.set(spawn.x, spawn.y, spawn.z);
     this.yaw = Math.atan2(-spawn.x, -spawn.z);
     this.pitch = 0;
-    this.updateCameraRotation();
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
     this.isScoped = false;
-    this.camera.fov = 1.0472;
-    this.verticalVelocity = 0;
-    this.isOnGround = true;
+    this.camera.fov = 75;
+    this.camera.updateProjectionMatrix();
     this.state.position = spawn;
     this.state.health = MAX_HEALTH;
     this.state.isDead = false;
@@ -726,15 +899,72 @@ export class GameEngine {
 
   public addRemotePlayer(state: PlayerState) {
     if (this.remotePlayers.has(state.id)) return;
-    const parts = createCharacterModel(this.scene, state.team, state.id);
-    setWeaponPose(parts, state.weaponId, this.scene);
-    parts.root.position.set(state.position.x, 0, state.position.z);
+    const group = new THREE.Group();
+    const teamColor = state.team === 't' ? COLORS.t : COLORS.ct;
+    const uniformMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.75, metalness: 0.0, envMapIntensity: 0.15 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.88, metalness: 0.0, envMapIntensity: 0.1 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b088, roughness: 0.85, metalness: 0.0, envMapIntensity: 0.08 });
+    // Taktik yelek: yarı-sert polimer görünümü için clearcoat (üstte ince, pürüzsüz bir kaplama) kullanılır
+    const vestMat = new THREE.MeshPhysicalMaterial({
+      color: 0x1a1a1a,
+      roughness: 0.45,
+      metalness: 0.15,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.3,
+      envMapIntensity: 0.8,
+    });
 
-    this.remoteParts.set(state.id, parts);
+    // Bacaklar
+    const legGeo = new THREE.BoxGeometry(0.22, 0.85, 0.22);
+    const leftLeg = new THREE.Mesh(legGeo, pantsMat);
+    leftLeg.position.set(-0.12, 0.42, 0); leftLeg.userData.playerId = state.id;
+    const rightLeg = new THREE.Mesh(legGeo, pantsMat);
+    rightLeg.position.set(0.12, 0.42, 0); rightLeg.userData.playerId = state.id;
+    // Gövde
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.6, 0.32), uniformMat);
+    torso.position.y = 1.15; torso.userData.playerId = state.id;
+    // Yelek
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.42, 0.34), vestMat);
+    vest.position.y = 1.15; vest.userData.playerId = state.id;
+    // Kollar
+    const armGeo = new THREE.BoxGeometry(0.15, 0.55, 0.15);
+    const leftArm = new THREE.Mesh(armGeo, uniformMat);
+    leftArm.position.set(-0.36, 1.15, 0); leftArm.userData.playerId = state.id;
+    const rightArm = new THREE.Mesh(armGeo, uniformMat);
+    rightArm.position.set(0.36, 1.15, 0); rightArm.userData.playerId = state.id;
+    // Boyun + Kafa
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.1, 0.15), skinMat);
+    neck.position.y = 1.5; neck.userData.playerId = state.id;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.32, 0.3), skinMat);
+    head.position.y = 1.72; head.userData.playerId = state.id;
+    // Kask
+    const helmet = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.14, 0.34),
+      new THREE.MeshStandardMaterial({
+        color: state.team === 't' ? 0x552211 : 0x1a2f5a,
+        roughness: 0.4,
+        metalness: 0.35,
+        envMapIntensity: 0.9,
+      }),
+    );
+    helmet.position.y = 1.9; helmet.userData.playerId = state.id;
+
+    group.add(leftLeg, rightLeg, torso, vest, leftArm, rightArm, neck, head, helmet);
+
+    // Silah
+    const weaponMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.1, 0.65),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.75, roughness: 0.28, envMapIntensity: 1.1 }),
+    );
+    weaponMesh.position.set(0.28, 1.2, 0.35);
+    weaponMesh.userData.playerId = state.id;
+    group.add(weaponMesh);
+
+    group.position.set(state.position.x, 0, state.position.z);
+    this.scene.add(group);
     this.remotePlayers.set(state.id, {
-      id: state.id, name: state.name, team: state.team,
-      root: parts.root, weaponGroup: parts.weaponGroup,
-      targetPosition: { x: state.position.x, y: 0, z: state.position.z },
+      id: state.id, name: state.name, team: state.team, mesh: group, weaponMesh,
+      targetPosition: new THREE.Vector3(state.position.x, 0, state.position.z),
       targetRotation: { x: state.rotation.x, y: state.rotation.y },
       state,
     });
@@ -743,41 +973,25 @@ export class GameEngine {
   public updateRemotePlayer(state: PlayerState) {
     let rp = this.remotePlayers.get(state.id);
     if (!rp) { this.addRemotePlayer(state); rp = this.remotePlayers.get(state.id)!; }
-    const parts = this.remoteParts.get(state.id);
-    if (parts && parts.root.metadata?.weaponId !== state.weaponId) {
-      setWeaponPose(parts, state.weaponId, this.scene);
-      parts.root.metadata = { ...parts.root.metadata, weaponId: state.weaponId };
-    }
     rp.state = state;
-    rp.targetPosition = { x: state.position.x, y: 0, z: state.position.z };
+    rp.targetPosition.set(state.position.x, 0, state.position.z);
     rp.targetRotation.x = state.rotation.x;
     rp.targetRotation.y = state.rotation.y;
+    const head = rp.mesh.children[7];
+    if (head) head.rotation.x = state.rotation.x;
   }
 
   public removeRemotePlayer(id: string) {
     const rp = this.remotePlayers.get(id);
-    if (rp) {
-      rp.root.dispose();
-      this.remotePlayers.delete(id);
-    }
-    this.remoteParts.delete(id);
+    if (rp) { this.scene.remove(rp.mesh); this.remotePlayers.delete(id); }
   }
 
   private updateRemotePlayers(dt: number) {
-    const lerpFactor = 1 - Math.pow(0.001, dt);
     for (const rp of this.remotePlayers.values()) {
-      const target = new Vector3(rp.targetPosition.x, rp.targetPosition.y, rp.targetPosition.z);
-      rp.root.position = Vector3.Lerp(rp.root.position, target, lerpFactor);
+      rp.mesh.position.lerp(rp.targetPosition, 1 - Math.pow(0.001, dt));
       const targetYaw = -rp.targetRotation.y + Math.PI;
-      rp.root.rotation.y = this.lerpAngle(rp.root.rotation.y, targetYaw, lerpFactor);
+      rp.mesh.rotation.y = THREE.MathUtils.lerp(rp.mesh.rotation.y, targetYaw, 1 - Math.pow(0.001, dt));
     }
-  }
-
-  private lerpAngle(a: number, b: number, t: number): number {
-    let diff = b - a;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    return a + diff * t;
   }
 
   private broadcastStateIfNeeded(now: number) {
@@ -789,4 +1003,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-}
+    }
