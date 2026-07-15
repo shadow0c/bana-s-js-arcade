@@ -11,7 +11,6 @@ import {
   COLORS,
   MAX_HEALTH,
   RESPAWN_TIME,
-  TEXTURES,
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
