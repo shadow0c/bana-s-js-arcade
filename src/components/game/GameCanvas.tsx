@@ -250,7 +250,7 @@ export function GameCanvas() {
         />
       )}
 
-      <GameHUD state={localState} remoteStates={remoteStates} killFeed={killFeed} showBuy={showBuy} onBuy={handleBuy} />
+      <GameHUD state={localState} remoteStates={remoteStates} killFeed={killFeed} showBuy={showBuy} onBuy={handleBuy} onCloseBuy={() => { setShowBuy(false); if (!isMobile && !engineRef.current?.getState().isDead) engineRef.current?.lockPointer(); }} />
 
       {started && isMobile && (
         <MobileControls

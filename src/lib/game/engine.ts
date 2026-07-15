@@ -11,7 +11,6 @@ import {
   COLORS,
   MAX_HEALTH,
   RESPAWN_TIME,
-  TEXTURES,
 } from './constants';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
@@ -63,6 +62,11 @@ export class GameEngine {
 
   private yaw = 0;
   private pitch = 0;
+  // Recoil (tepme birikimi & toparlanma)
+  private recoilPitch = 0;
+  private recoilYaw = 0;
+  private consecutiveShots = 0;
+  private lastFireGap = 0;
 
   private weaponModel: THREE.Group | null = null;
   private remotePlayers = new Map<string, RemotePlayer>();
@@ -99,6 +103,15 @@ export class GameEngine {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Gölge (mobilde performans için kapalı)
+    const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+    if (!isMobile) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     this.raycaster = new THREE.Raycaster();
 
     this.setupScene();
@@ -136,48 +149,109 @@ export class GameEngine {
     };
   }
 
+  private makeCanvasTexture(kind: 'floor' | 'wall' | 'crate'): THREE.CanvasTexture {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    if (kind === 'floor') {
+      // Kum/toprak - dust2 zemini
+      ctx.fillStyle = '#c9a878';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 3000; i++) {
+        const x = Math.random() * size, y = Math.random() * size;
+        const v = Math.random() * 40 - 20;
+        ctx.fillStyle = `rgba(${139 + v},${115 + v},${75 + v},0.5)`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+    } else if (kind === 'wall') {
+      // Kum taş duvar
+      ctx.fillStyle = '#a08052';
+      ctx.fillRect(0, 0, size, size);
+      const bw = 64, bh = 32;
+      for (let y = 0; y < size; y += bh) {
+        const off = (y / bh) % 2 === 0 ? 0 : bw / 2;
+        for (let x = -bw; x < size; x += bw) {
+          ctx.fillStyle = `hsl(${25 + Math.random() * 10}, ${35 + Math.random() * 15}%, ${45 + Math.random() * 15}%)`;
+          ctx.fillRect(x + off, y, bw - 2, bh - 2);
+        }
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1;
+      for (let y = 0; y < size; y += bh) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+      }
+    } else {
+      // Ahşap kutu
+      ctx.fillStyle = '#7a4a1e';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 12; i++) {
+        ctx.strokeStyle = `rgba(0,0,0,${0.15 + Math.random() * 0.2})`;
+        ctx.lineWidth = 1 + Math.random() * 2;
+        ctx.beginPath();
+        ctx.moveTo(0, i * 22 + Math.random() * 5);
+        ctx.bezierCurveTo(size / 3, i * 22, (size * 2) / 3, i * 22 + 8, size, i * 22 + Math.random() * 5);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#3a1f08';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(0, 0, size, size);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
   private setupScene() {
     this.scene.background = new THREE.Color(COLORS.sky);
     this.scene.fog = new THREE.Fog(COLORS.sky, 40, 160);
 
-    const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.7);
+    // Ortam ışığı (AO benzeri yumuşak)
+    const hemiLight = new THREE.HemisphereLight(0xfff2d9, 0x554433, 0.55);
     this.scene.add(hemiLight);
-    const dirLight = new THREE.DirectionalLight(0xffe4b5, 1.1);
-    dirLight.position.set(40, 90, 30);
+    const ambient = new THREE.AmbientLight(0x6b5a44, 0.25);
+    this.scene.add(ambient);
+
+    // Yönlü ışık + gölge
+    const dirLight = new THREE.DirectionalLight(0xffe4b5, 1.4);
+    dirLight.position.set(45, 100, 30);
+    dirLight.castShadow = this.renderer.shadowMap.enabled;
+    if (dirLight.castShadow) {
+      dirLight.shadow.mapSize.set(1024, 1024);
+      dirLight.shadow.camera.near = 5;
+      dirLight.shadow.camera.far = 200;
+      dirLight.shadow.camera.left = -70;
+      dirLight.shadow.camera.right = 70;
+      dirLight.shadow.camera.top = 70;
+      dirLight.shadow.camera.bottom = -70;
+      dirLight.shadow.bias = -0.0005;
+    }
     this.scene.add(dirLight);
 
-    const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
-
-    // Floor with texture
-    const floorTex = loader.load(TEXTURES.floor);
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(20, 20);
+    // Floor - prosedürel doku
+    const floorTex = this.makeCanvasTexture('floor');
+    floorTex.repeat.set(30, 30);
     const floorGeo = new THREE.PlaneGeometry(120, 120);
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, color: COLORS.floor, roughness: 0.95 });
+    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.98 });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
     floor.userData.isWall = true;
     this.scene.add(floor);
     this.wallMeshes.push(floor);
 
-    // Walls with brick texture
-    const wallTex = loader.load(TEXTURES.wall);
-    wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
-    const crateTex = loader.load(TEXTURES.crate);
-
+    // Duvarlar - prosedürel doku
     for (const box of MAP_WALLS) {
-      const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
       const useCrate = box.w <= 6 && box.d <= 6 && box.h <= 2.5;
-      const tex = useCrate ? crateTex : wallTex.clone();
-      if (!useCrate) {
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(Math.max(1, box.w / 2), Math.max(1, box.h / 2));
-        tex.needsUpdate = true;
-      }
-      const mat = new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff, roughness: 0.85 });
+      const tex = this.makeCanvasTexture(useCrate ? 'crate' : 'wall');
+      if (!useCrate) tex.repeat.set(Math.max(1, box.w / 3), Math.max(1, box.h / 3));
+      const geo = new THREE.BoxGeometry(box.w, box.h, box.d);
+      const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(box.x, box.h / 2, box.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       mesh.userData.isWall = true;
       this.scene.add(mesh);
       this.wallMeshes.push(mesh);
@@ -378,10 +452,27 @@ export class GameEngine {
     this.updateMovement(dt);
     this.updateShooting(now);
     this.updateReload(now);
+    this.updateRecoilRecovery(dt, now);
     this.updateWeaponModel(dt);
     this.updateRemotePlayers(dt);
     this.updateGrenades(dt, now);
     this.broadcastStateIfNeeded(now);
+  }
+
+  private updateRecoilRecovery(dt: number, now: number) {
+    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir
+    if (this.isShooting) return;
+    if (now - this.lastShotTime < 60) return;
+    const recover = Math.min(1, dt * 8);
+    const dp = this.recoilPitch * recover;
+    const dy = this.recoilYaw * recover;
+    this.pitch -= dp; this.recoilPitch -= dp;
+    this.yaw -= dy; this.recoilYaw -= dy;
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
+    if (Math.abs(this.recoilPitch) < 0.001) this.recoilPitch = 0;
+    if (Math.abs(this.recoilYaw) < 0.001) this.recoilYaw = 0;
+    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) this.consecutiveShots = 0;
   }
 
   private updateMovement(dt: number) {
@@ -436,13 +527,29 @@ export class GameEngine {
     if (now - this.lastShotTime < weapon.fireRate) return;
     if (this.state.ammo <= 0) { this.reload(); return; }
 
+    // Otomatik silahda ardışık atışlar için birikim faktörü
+    this.lastFireGap = now - this.lastShotTime;
     this.lastShotTime = now;
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
-    this.pitch += weapon.recoil * (Math.random() * 0.5 + 0.8);
+    // Ateş hızlı geldikçe birikim artar
+    if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
+    else this.consecutiveShots = 1;
+    const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
+    // Scope yaparken tepme yarıya iner
+    const scopeMul = this.isScoped ? 0.5 : 1;
+
+    // Dikey tepme (yukarı) + yatay yalpa
+    const vert = weapon.recoil * buildUp * scopeMul;
+    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
+    this.recoilPitch += vert;
+    this.recoilYaw += horiz;
+    this.pitch += vert;
+    this.yaw += horiz;
     this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
     this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
 
     const direction = new THREE.Vector3();
     this.camera.getWorldDirection(direction);
@@ -535,16 +642,44 @@ export class GameEngine {
 
   private updateGrenades(dt: number, now: number) {
     const gravity = -18;
+    const r = 0.15;
     for (let i = this.grenades.length - 1; i >= 0; i--) {
       const g = this.grenades[i];
       g.velocity.y += gravity * dt;
+      const prev = g.mesh.position.clone();
       g.mesh.position.addScaledVector(g.velocity, dt);
-      // floor bounce
-      if (g.mesh.position.y < 0.15) {
-        g.mesh.position.y = 0.15;
+
+      // Zemin
+      if (g.mesh.position.y < r) {
+        g.mesh.position.y = r;
         g.velocity.y *= -0.4;
-        g.velocity.x *= 0.7;
-        g.velocity.z *= 0.7;
+        g.velocity.x *= 0.75;
+        g.velocity.z *= 0.75;
+      }
+
+      // Dış harita sınırları
+      if (g.mesh.position.x - r < MAP_BOUNDS.minX) { g.mesh.position.x = MAP_BOUNDS.minX + r; g.velocity.x *= -0.5; }
+      if (g.mesh.position.x + r > MAP_BOUNDS.maxX) { g.mesh.position.x = MAP_BOUNDS.maxX - r; g.velocity.x *= -0.5; }
+      if (g.mesh.position.z - r < MAP_BOUNDS.minZ) { g.mesh.position.z = MAP_BOUNDS.minZ + r; g.velocity.z *= -0.5; }
+      if (g.mesh.position.z + r > MAP_BOUNDS.maxZ) { g.mesh.position.z = MAP_BOUNDS.maxZ - r; g.velocity.z *= -0.5; }
+
+      // Duvar AABB çarpışması - kutu yönüne göre sekme
+      for (const box of this.colliders) {
+        if (
+          g.mesh.position.x + r > box.min.x && g.mesh.position.x - r < box.max.x &&
+          g.mesh.position.y + r > box.min.y && g.mesh.position.y - r < box.max.y &&
+          g.mesh.position.z + r > box.min.z && g.mesh.position.z - r < box.max.z
+        ) {
+          // Hangi eksende girildiyse o eksende sek
+          const enteredX = prev.x + r <= box.min.x || prev.x - r >= box.max.x;
+          const enteredZ = prev.z + r <= box.min.z || prev.z - r >= box.max.z;
+          const enteredY = prev.y + r <= box.min.y || prev.y - r >= box.max.y;
+          if (enteredX) { g.mesh.position.x = prev.x; g.velocity.x *= -0.5; }
+          else if (enteredZ) { g.mesh.position.z = prev.z; g.velocity.z *= -0.5; }
+          else if (enteredY) { g.mesh.position.y = prev.y; g.velocity.y *= -0.4; }
+          else { g.mesh.position.copy(prev); g.velocity.multiplyScalar(-0.5); }
+          g.velocity.multiplyScalar(0.8);
+        }
       }
       if (now >= g.detonateAt) {
         this.detonateGrenade(g);
@@ -596,59 +731,12 @@ export class GameEngine {
   }
 
   private equipWeapon(id: string) {
-    if (this.weaponModel) this.camera.remove(this.weaponModel);
+    // 3D silah modeli kaldırıldı — HUD gerçekçi 2D silah görselini gösteriyor.
+    if (this.weaponModel) { this.camera.remove(this.weaponModel); this.weaponModel = null; }
     const def = WEAPONS[id];
-    const group = new THREE.Group();
+    if (!def) return;
 
-    // Skin-toned hands
-    const handMat = new THREE.MeshStandardMaterial({ color: 0xd9a67a, roughness: 0.8 });
-    const forearmGeo = new THREE.BoxGeometry(0.08, 0.08, 0.35);
-    const leftHand = new THREE.Mesh(forearmGeo, handMat);
-    leftHand.position.set(-0.05, -0.02, -0.12);
-    const rightHand = new THREE.Mesh(forearmGeo, handMat);
-    rightHand.position.set(0.08, -0.02, -0.05);
-    group.add(leftHand, rightHand);
-
-    // Weapon by type
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 });
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b3a1a, roughness: 0.7 });
-
-    if (def.grenade === 'flash') {
-      const g = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0xbbbbbb }));
-      g.position.set(0.06, -0.02, -0.15); group.add(g);
-    } else if (def.grenade === 'he') {
-      const g = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0x2a5a2a }));
-      g.position.set(0.06, -0.02, -0.15); group.add(g);
-    } else if (def.id === 'knife') {
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.3), new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.2 }));
-      blade.position.set(0.05, 0, -0.25); group.add(blade);
-    } else {
-      const barrelLen = def.id === 'sniper' ? 1.1 : def.id === 'rifle' || def.id === 'm4' ? 0.75 : 0.5;
-      const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, barrelLen), bodyMat);
-      barrel.position.set(0.05, -0.02, -0.25 - barrelLen / 2 + 0.15);
-      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.08), woodMat);
-      grip.position.set(0.05, -0.12, -0.05);
-      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.09, 0.22), woodMat);
-      stock.position.set(0.05, -0.04, 0.08);
-      group.add(barrel, grip, stock);
-      if (def.id === 'rifle') {
-        const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.12, 0.08), bodyMat);
-        mag.position.set(0.05, -0.13, -0.15);
-        group.add(mag);
-      }
-      if (def.scope) {
-        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.32, 12), bodyMat);
-        scope.rotation.x = Math.PI / 2;
-        scope.position.set(0.05, 0.05, -0.15);
-        group.add(scope);
-      }
-    }
-
-    group.position.set(0.18, -0.25, -0.4);
-    this.camera.add(group);
     if (!this.camera.parent) this.scene.add(this.camera); // ensure attached
-    this.weaponModel = group;
-
     this.state.weaponId = id;
     this.state.ammo = def.clipSize;
     this.state.maxAmmo = def.clipSize;
@@ -661,12 +749,7 @@ export class GameEngine {
   }
 
   private updateWeaponModel(dt: number) {
-    if (!this.weaponModel) return;
-    const time = performance.now() / 1000;
-    const moving = this.direction.lengthSq() > 0;
-    const bob = Math.sin(time * (moving ? 12 : 2)) * (moving ? 0.012 : 0.004);
-    this.weaponModel.position.y = -0.25 + bob;
-
+    // Scope FOV lerp (silah 2D HUD'da)
     const targetFov = this.isScoped && WEAPONS[this.state.weaponId].scope ? 22 : 75;
     if (Math.abs(this.camera.fov - targetFov) > 0.1) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, dt * 12);

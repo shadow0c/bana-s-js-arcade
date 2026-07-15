@@ -1,6 +1,21 @@
 import { useEffect, useState } from 'react';
 import { WEAPONS } from '@/lib/game/constants';
 import type { PlayerState, KillFeedEntry } from '@/lib/game/types';
+import akImg from '@/assets/weapons/ak47.png';
+import awpImg from '@/assets/weapons/awp.png';
+import m4Img from '@/assets/weapons/m4.png';
+import glockImg from '@/assets/weapons/glock.png';
+import deagleImg from '@/assets/weapons/deagle.png';
+import knifeImg from '@/assets/weapons/knife.png';
+
+const WEAPON_IMG: Record<string, string> = {
+  rifle: akImg,
+  sniper: awpImg,
+  m4: m4Img,
+  pistol: glockImg,
+  deagle: deagleImg,
+  knife: knifeImg,
+};
 
 interface GameHUDProps {
   state: PlayerState | null;
@@ -8,9 +23,10 @@ interface GameHUDProps {
   killFeed: KillFeedEntry[];
   showBuy: boolean;
   onBuy: (weaponId: string) => void;
+  onCloseBuy?: () => void;
 }
 
-export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy }: GameHUDProps) {
+export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onCloseBuy }: GameHUDProps) {
   const [showScores, setShowScores] = useState(false);
 
   useEffect(() => {
@@ -39,11 +55,31 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy }: GameH
 
   return (
     <div className="pointer-events-none absolute inset-0">
-      {/* Crosshair */}
-      <div className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2">
-        <div className="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 bg-white/80" />
-        <div className="absolute left-0 top-1/2 h-0.5 w-full -translate-y-1/2 bg-white/80" />
-      </div>
+      {/* Crosshair (+) with center gap */}
+      {!state.isDead && (
+        <div className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2">
+          {/* dot */}
+          <div className="absolute left-1/2 top-1/2 h-[2px] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-emerald-400" />
+          {/* top */}
+          <div className="absolute left-1/2 top-0 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* bottom */}
+          <div className="absolute bottom-0 left-1/2 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* left */}
+          <div className="absolute left-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* right */}
+          <div className="absolute right-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+        </div>
+      )}
+
+      {/* Weapon viewmodel image */}
+      {WEAPON_IMG[state.weaponId] && !state.isDead && (
+        <img
+          src={WEAPON_IMG[state.weaponId]}
+          alt={WEAPONS[state.weaponId]?.name}
+          className="pointer-events-none absolute bottom-24 right-4 h-40 w-auto select-none drop-shadow-2xl sm:bottom-28 sm:right-8 sm:h-56"
+          style={{ transform: state.isScoped ? 'translateY(140%)' : 'none', transition: 'transform 120ms' }}
+        />
+      )}
 
       {/* Bottom HUD */}
       <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-4 sm:p-6">
@@ -139,7 +175,15 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy }: GameH
       {showBuy && (
         <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/70">
           <div className="mx-4 w-full max-w-md rounded-lg bg-black/90 p-6 text-white">
-            <h2 className="mb-4 text-center text-xl font-bold">SATIN AL</h2>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-bold">SATIN AL</h2>
+              <button
+                onClick={() => onCloseBuy?.()}
+                className="rounded bg-red-600 px-3 py-1 text-sm font-bold text-white transition hover:bg-red-500"
+              >
+                ✕ KAPAT
+              </button>
+            </div>
             <div className="space-y-2">
               {Object.values(WEAPONS).map((w) => (
                 <button
@@ -155,9 +199,12 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy }: GameH
                 </button>
               ))}
             </div>
-            <p className="mt-4 text-center text-sm text-gray-400">
-              Tekrar oynamak için B&apos;ye bas veya bir silah seç
-            </p>
+            <button
+              onClick={() => onCloseBuy?.()}
+              className="mt-4 w-full rounded bg-white/10 py-2 text-sm font-bold text-white transition hover:bg-white/20"
+            >
+              KAPAT (B)
+            </button>
           </div>
         </div>
       )}
