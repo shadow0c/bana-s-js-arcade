@@ -13,7 +13,10 @@ import {
   RESPAWN_TIME,
   TEXTURES,
 } from './constants';
+import type { MapBox } from './types';
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _M = MapBox;
 import { gameAudio } from './audio';
 
 export interface GameEngineCallbacks {
