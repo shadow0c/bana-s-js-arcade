@@ -510,13 +510,29 @@ export class GameEngine {
     if (now - this.lastShotTime < weapon.fireRate) return;
     if (this.state.ammo <= 0) { this.reload(); return; }
 
+    // Otomatik silahda ardışık atışlar için birikim faktörü
+    this.lastFireGap = now - this.lastShotTime;
     this.lastShotTime = now;
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
-    this.pitch += weapon.recoil * (Math.random() * 0.5 + 0.8);
+    // Ateş hızlı geldikçe birikim artar
+    if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
+    else this.consecutiveShots = 1;
+    const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
+    // Scope yaparken tepme yarıya iner
+    const scopeMul = this.isScoped ? 0.5 : 1;
+
+    // Dikey tepme (yukarı) + yatay yalpa
+    const vert = weapon.recoil * buildUp * scopeMul;
+    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
+    this.recoilPitch += vert;
+    this.recoilYaw += horiz;
+    this.pitch += vert;
+    this.yaw += horiz;
     this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
     this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
 
     const direction = new THREE.Vector3();
     this.camera.getWorldDirection(direction);
