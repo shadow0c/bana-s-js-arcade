@@ -55,11 +55,31 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
 
   return (
     <div className="pointer-events-none absolute inset-0">
-      {/* Crosshair */}
-      <div className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2">
-        <div className="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 bg-white/80" />
-        <div className="absolute left-0 top-1/2 h-0.5 w-full -translate-y-1/2 bg-white/80" />
-      </div>
+      {/* Crosshair (+) with center gap */}
+      {!state.isDead && (
+        <div className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2">
+          {/* dot */}
+          <div className="absolute left-1/2 top-1/2 h-[2px] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-emerald-400" />
+          {/* top */}
+          <div className="absolute left-1/2 top-0 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* bottom */}
+          <div className="absolute bottom-0 left-1/2 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* left */}
+          <div className="absolute left-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+          {/* right */}
+          <div className="absolute right-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
+        </div>
+      )}
+
+      {/* Weapon viewmodel image */}
+      {WEAPON_IMG[state.weaponId] && !state.isDead && (
+        <img
+          src={WEAPON_IMG[state.weaponId]}
+          alt={WEAPONS[state.weaponId]?.name}
+          className="pointer-events-none absolute bottom-24 right-4 h-40 w-auto select-none drop-shadow-2xl sm:bottom-28 sm:right-8 sm:h-56"
+          style={{ transform: state.isScoped ? 'translateY(140%)' : 'none', transition: 'transform 120ms' }}
+        />
+      )}
 
       {/* Bottom HUD */}
       <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-4 sm:p-6">
