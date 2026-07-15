@@ -62,6 +62,11 @@ export class GameEngine {
 
   private yaw = 0;
   private pitch = 0;
+  // Recoil (tepme birikimi & toparlanma)
+  private recoilPitch = 0;
+  private recoilYaw = 0;
+  private consecutiveShots = 0;
+  private lastFireGap = 0;
 
   private weaponModel: THREE.Group | null = null;
   private remotePlayers = new Map<string, RemotePlayer>();
