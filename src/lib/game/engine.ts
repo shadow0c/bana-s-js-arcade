@@ -736,11 +736,7 @@ export class GameEngine {
     const def = WEAPONS[id];
     if (!def) return;
 
-    group.position.set(0.18, -0.25, -0.4);
-    this.camera.add(group);
     if (!this.camera.parent) this.scene.add(this.camera); // ensure attached
-    this.weaponModel = group;
-
     this.state.weaponId = id;
     this.state.ammo = def.clipSize;
     this.state.maxAmmo = def.clipSize;
