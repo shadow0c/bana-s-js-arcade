@@ -27,7 +27,13 @@ export interface ReflectiveFloorOptions {
  * ıslak/sıkışmış toprak zeminlerde gözlemlenen gerçek fiziksel davranış budur.
  */
 export class PhysicalReflectiveFloor extends THREE.Mesh {
+  // THREE.Mesh'ten miras kalan alanları TS'nin çıkarım kapsamında tuttuğumuzu
+  // açıkça bildir — bazı üretim TS/three sürüm kombinasyonlarında generic'siz
+  // extends kullanımı bu alanları "does not exist" olarak raporlayabiliyor.
   declare material: THREE.ShaderMaterial;
+  declare geometry: THREE.BufferGeometry;
+  declare matrixWorld: THREE.Matrix4;
+  declare visible: boolean;
 
   private renderTarget: THREE.WebGLRenderTarget;
   private reflectionCameras = new WeakMap<THREE.Camera, THREE.PerspectiveCamera>();
