@@ -762,6 +762,11 @@ export class GameEngine {
     if (this.state.isDead || this.isReloading) return;
     const weapon = WEAPONS[this.state.weaponId];
     if (weapon.grenade) return; // fire tuşu granatları atmaz
+    // Bıçak mermi tüketmez ve raycast/ses "ateş" akışını kullanmaz — kısa
+    // menzilli bir "slash" mekaniği ilerideki bir turda eklenecek; şimdilik
+    // primary trigger sessizce yutulur (aksi halde her tıkta ateş sesi + boş
+    // mermi kontrolü tetiklenip HUD'da yanlış davranış yaratıyordu).
+    if (weapon.melee) return;
     if (now - this.lastShotTime < weapon.fireRate) return;
     if (this.state.ammo <= 0) { this.reload(); return; }
 
