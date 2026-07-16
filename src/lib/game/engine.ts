@@ -133,6 +133,11 @@ export class GameEngine {
   private cachedHitTargets: THREE.Object3D[] = [];
   private hitTargetsDirty = true;
 
+  // Inspector (sahne düzenleyici) açıkken true olur: WASD hareketi, ateş etme
+  // ve pointer-lock devre dışı kalır ki fare TransformControls gizmo'larıyla
+  // serbestçe etkileşebilsin. Inspector kapanınca normal oyun akışı devam eder.
+  private inspectorModeActive = false;
+
   private isMobile = false;
   private reflectiveFloor: PhysicalReflectiveFloor | null = null;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
@@ -521,6 +526,7 @@ export class GameEngine {
   };
 
   private onMouseDown = (e: MouseEvent) => {
+    if (this.inspectorModeActive) return;
     if (e.button === 0) {
       this.isShooting = true;
       this.tryShoot();
@@ -592,6 +598,64 @@ export class GameEngine {
     const isTouch = window.matchMedia('(pointer: coarse)').matches;
     return isTouch ? true : this.mouseLocked;
   }
+
+  // ============ INSPECTOR / EDITOR PUBLIC API ============
+  // Bu blok yalnızca Inspector (src/lib/game/inspector/Inspector.ts) tarafından
+  // kullanılır. Sahneye doğrudan erişim vererek inspector'ın küp eklemesi,
+  // asset import etmesi ve materyal/renk düzenlemesi mümkün olur.
+
+  public getScene(): THREE.Scene { return this.scene; }
+  public getCamera(): THREE.PerspectiveCamera { return this.camera; }
+  public getRenderer(): THREE.WebGLRenderer { return this.renderer; }
+  /** Inspector'ın renk boyayabilmesi/seçebilmesi için MEVCUT harita duvarlarının referansı (kopya değil). */
+  public getWallMeshes(): THREE.Mesh[] { return this.wallMeshes; }
+
+  /**
+   * Inspector'daki "serbest bakış" (sağ-tık sürükle) bunu çağırarak kamerayı
+   * döndürür. Doğrudan `camera.rotation` değiştirmek yerine bunun üzerinden
+   * gitmek ÖNEMLİ: aksi halde inspector kapatıldığında `this.yaw`/`this.pitch`
+   * (hareket ve recoil hesaplarının temel aldığı iç durum) eskide kalır ve
+   * oyuncu normal moda dönünce kamera aniden "sıçrar" (senkron bozulması).
+   */
+  public getYawPitch() { return { yaw: this.yaw, pitch: this.pitch }; }
+  public setYawPitch(yaw: number, pitch: number) {
+    this.yaw = yaw;
+    this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+  }
+
+  /** Inspector'ın eklediği bir küp/mesh'i çarpışma listesine dahil eder (oyuncu artık içinden geçemez). */
+  public registerCollider(box: THREE.Box3) {
+    this.colliders.push(box);
+  }
+
+  public unregisterCollider(box: THREE.Box3) {
+    const idx = this.colliders.indexOf(box);
+    if (idx > -1) this.colliders.splice(idx, 1);
+  }
+
+  /** Inspector'ın eklediği bir mesh'i mermi/raycast hedefi (duvar gibi) sayar. */
+  public registerWallMesh(mesh: THREE.Mesh) {
+    this.wallMeshes.push(mesh);
+  }
+
+  public unregisterWallMesh(mesh: THREE.Mesh) {
+    const idx = this.wallMeshes.indexOf(mesh);
+    if (idx > -1) this.wallMeshes.splice(idx, 1);
+  }
+
+  /** true iken oyuncu hareketi/ateşi/pointer-lock devre dışı kalır (bkz. update()). */
+  public setInspectorModeActive(active: boolean) {
+    this.inspectorModeActive = active;
+    if (active) {
+      this.moveForward = this.moveBackward = this.moveLeft = this.moveRight = false;
+      this.isShooting = false;
+      try { this.unlockPointer(); } catch { /* ignore */ }
+    }
+  }
+
+  public isInspectorModeActive() { return this.inspectorModeActive; }
 
   public start() {
     if (this.isRunning) return;
@@ -671,11 +735,13 @@ export class GameEngine {
 
   private update(dt: number, now: number) {
     if (this.state.isDead) return;
-    this.updateMovement(dt);
-    this.updateShooting(now);
-    this.updateReload(now);
-    this.updateRecoilRecovery(dt, now);
-    this.updateWeaponModel(dt);
+    if (!this.inspectorModeActive) {
+      this.updateMovement(dt);
+      this.updateShooting(now);
+      this.updateReload(now);
+      this.updateRecoilRecovery(dt, now);
+      this.updateWeaponModel(dt);
+    }
     this.updateRemotePlayers(dt);
     this.updateGrenades(dt, now);
     this.broadcastStateIfNeeded(now);
@@ -1210,4 +1276,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-        }
+      }
