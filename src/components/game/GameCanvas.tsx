@@ -2,6 +2,7 @@ import { GameEngine } from '@/lib/game/engine';
 import { GameNetwork } from '@/lib/game/network';
 import { WEAPONS, KILL_REWARD } from '@/lib/game/constants';
 import type { PlayerState, Team, KillFeedEntry } from '@/lib/game/types';
+import { SceneInspector } from '@/lib/game/inspector/Inspector';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GameHUD } from './GameHUD';
 import { MobileControls } from './MobileControls';
@@ -28,6 +29,7 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const networkRef = useRef<GameNetwork | null>(null);
+  const inspectorRef = useRef<SceneInspector | null>(null);
   const isMobile = useIsMobile();
 
   const [playerName, setPlayerName] = useState('');
@@ -143,7 +145,22 @@ export function GameCanvas() {
     engine.start();
     if (!isMobile) engine.lockPointer();
 
+    // Sahne Inspector'ı: masaüstünde `~` (backtick) tuşuyla açılır/kapanır.
+    // Mobilde devre dışı (dokunmatik editör deneyimi ayrı bir iş, kapsam dışı).
+    const inspector = !isMobile ? new SceneInspector(engine) : null;
+    inspectorRef.current = inspector;
+    const onToggleInspector = (e: KeyboardEvent) => {
+      if (e.key === '`') inspector?.toggle();
+    };
+    if (inspector) window.addEventListener('keydown', onToggleInspector);
+
     return () => {
+      if (inspector) {
+        window.removeEventListener('keydown', onToggleInspector);
+        inspector.disposeAll();
+        inspector.close();
+      }
+      inspectorRef.current = null;
       engine.cleanup();
       void network.cleanup();
       engineRef.current = null;
@@ -223,7 +240,7 @@ export function GameCanvas() {
               {isMobile ? (
                 <>Sol joystick: hareket • Sağ ekran: nişan • ATEŞ butonu • F Flash • G HE</>
               ) : (
-                <>WASD hareket • Mouse nişan • Sol tık ateş • Sağ tık scope • R reload • B satın al • F Flash • G HE • Tab skor</>
+                <>WASD hareket • Mouse nişan • Sol tık ateş • Sağ tık scope • R reload • B satın al • F Flash • G HE • Tab skor • ~ Sahne Editörü</>
               )}
             </div>
           </div>
