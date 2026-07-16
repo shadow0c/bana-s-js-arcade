@@ -31,6 +31,59 @@ interface Grenade {
   detonateAt: number;
 }
 
+// HE granatının maksimum etkili yarıçapı (metre) — hem kendine hem uzak oyunculara uygulanır.
+const HE_BLAST_RADIUS = 6;
+const HE_MAX_DAMAGE = 80;
+
+/**
+ * Bir Object3D alt ağacındaki tüm Mesh/Line geometrilerini ve materyallerini
+ * (materyale bağlı texture'lar dahil) GPU belleğinden serbest bırakır.
+ *
+ * NEDEN GEREKLİ: three.js'te `scene.remove(obj)` yalnızca sahne grafiğinden
+ * çıkarır; WebGLRenderer'ın iç kaydındaki buffer/texture/program referansları
+ * `.dispose()` çağrılmadan serbest kalmaz. Bu proje sürekli obje yaratıp
+ * (mermi izi, kurşun deliği, granat, uzak oyuncu modeli) kaldırdığı için,
+ * dispose çağrılmaması doğrudan sınırsız büyüyen bir GPU bellek sızıntısıdır.
+ *
+ * NOT: `scene.environment` (PMREM env map) burada KASITLI olarak dokunulmaz —
+ * materyaller ona ayrı bir `envMap` referansı olarak değil, global
+ * `scene.environment` üzerinden erişir; bu fonksiyon yalnızca materyalin
+ * kendi sahip olduğu texture slotlarını (map, normalMap, vb.) temizler.
+ */
+const DISPOSABLE_TEXTURE_KEYS = [
+  'map',
+  'normalMap',
+  'roughnessMap',
+  'metalnessMap',
+  'aoMap',
+  'alphaMap',
+  'bumpMap',
+  'emissiveMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+] as const;
+
+function disposeMaterial(material: THREE.Material) {
+  const mat = material as unknown as Record<string, unknown>;
+  for (const key of DISPOSABLE_TEXTURE_KEYS) {
+    const tex = mat[key];
+    if (tex instanceof THREE.Texture) tex.dispose();
+  }
+  material.dispose();
+}
+
+function disposeObject3D(root: THREE.Object3D) {
+  root.traverse((child) => {
+    if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
+      child.geometry?.dispose();
+      const material = child.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(material)) material.forEach(disposeMaterial);
+      else if (material) disposeMaterial(material);
+    }
+  });
+}
+
 export class GameEngine {
   private canvas: HTMLCanvasElement;
   private renderer: THREE.WebGLRenderer;
@@ -69,12 +122,16 @@ export class GameEngine {
   private consecutiveShots = 0;
   private lastFireGap = 0;
 
-  private weaponModel: THREE.Group | null = null;
   private remotePlayers = new Map<string, RemotePlayer>();
   private colliders: THREE.Box3[] = [];
   private wallMeshes: THREE.Mesh[] = [];
   private bulletHoles: THREE.Mesh[] = [];
   private grenades: Grenade[] = [];
+
+  // Vuruş (raycast) hedef önbelleği — her atışta yeniden kurulmak yerine
+  // sadece oyuncu katılıp/ayrıldığında geçersiz kılınır (bkz. hitTargetsDirty).
+  private cachedHitTargets: THREE.Object3D[] = [];
+  private hitTargetsDirty = true;
 
   private isMobile = false;
   private reflectiveFloor: PhysicalReflectiveFloor | null = null;
@@ -88,6 +145,22 @@ export class GameEngine {
   private rafId: number | null = null;
   private lastTime = performance.now();
   private isRunning = false;
+
+  // cleanup() sırasında iptal edilebilmesi için tüm zamanlayıcı kimlikleri burada tutulur.
+  // Aksi halde bir bileşen unmount olduktan sonra (ör. React StrictMode çift-mount,
+  // sekme kapatma sırasında yarışan respawn) "ölü" bir engine örneği üzerinde kod
+  // çalışmaya devam eder — hem mantık hatası hem bellek sızıntısı kaynağıdır.
+  private pendingTimeouts = new Set<ReturnType<typeof setTimeout>>();
+
+  // Sıcak yol (her karede/her atışta çalışan) allokasyonlarını önlemek için
+  // önceden ayrılmış geçici vektörler. reflectiveFloor.ts'deki aynı desenle tutarlı.
+  private readonly _scratchForward = new THREE.Vector3();
+  private readonly _scratchRight = new THREE.Vector3();
+  private readonly _scratchMove = new THREE.Vector3();
+  private readonly _scratchNextPos = new THREE.Vector3();
+  private readonly _scratchUp = new THREE.Vector3(0, 1, 0);
+  private readonly _scratchShotDir = new THREE.Vector3();
+  private readonly _scratchShotOrigin = new THREE.Vector3();
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -104,9 +177,14 @@ export class GameEngine {
     this.state = this.createInitialState();
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.05, 500);
+    // clientWidth/clientHeight, canvas layout tamamlanmadan (ör. flex konteyner henüz
+    // ölçülenmeden) 0 gelebilir; 0/0 -> NaN aspect ratio -> bozuk projeksiyon matrisi.
+    // Bu yüzden minimum 1 ile korunuyor.
+    const initialWidth = canvas.clientWidth || 1;
+    const initialHeight = canvas.clientHeight || 1;
+    this.camera = new THREE.PerspectiveCamera(75, initialWidth / initialHeight, 0.05, 500);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    this.renderer.setSize(initialWidth, initialHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     // Gölge (mobilde performans için kapalı)
     this.isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
@@ -383,15 +461,19 @@ export class GameEngine {
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('resize', this.onResize);
-
-    this.canvas.addEventListener('click', () => {
-      // Mobil cihazlarda pointer lock istemiyoruz
-      const isTouch = window.matchMedia('(pointer: coarse)').matches;
-      if (!isTouch && !this.mouseLocked && !this.state.isDead) {
-        this.canvas.requestPointerLock();
-      }
-    });
+    // Önceden anonim bir arrow function idi -> cleanup() içinde asla removeEventListener
+    // edilemiyordu, bu da canvas her yeniden kullanıldığında (ör. React remount) `this`
+    // referansını tutan yeni bir dinleyicinin birikmesine (bellek sızıntısı) yol açıyordu.
+    this.canvas.addEventListener('click', this.onCanvasClick);
   }
+
+  private onCanvasClick = () => {
+    // Mobil cihazlarda pointer lock istemiyoruz
+    const isTouch = window.matchMedia('(pointer: coarse)').matches;
+    if (!isTouch && !this.mouseLocked && !this.state.isDead) {
+      this.canvas.requestPointerLock();
+    }
+  };
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
@@ -458,9 +540,13 @@ export class GameEngine {
   };
 
   private onResize = () => {
-    this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
+    // clientWidth/Height geçici olarak 0 olabilir (ör. sekme gizliyken resize event'i
+    // tetiklenmesi); 0'a bölme -> NaN aspect ratio -> projeksiyon matrisi bozulur.
+    const width = this.canvas.clientWidth || 1;
+    const height = this.canvas.clientHeight || 1;
+    this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
+    this.renderer.setSize(width, height);
   };
 
   // ============ MOBILE PUBLIC API ============
@@ -519,9 +605,28 @@ export class GameEngine {
     if (this.rafId) cancelAnimationFrame(this.rafId);
   }
 
+  /**
+   * setTimeout tabanlı geçici efektleri (mermi izi, granat toparlanması, respawn)
+   * izlenebilir hale getirir. cleanup() çağrıldığında tüm bekleyen zamanlayıcılar
+   * iptal edilir; aksi halde "ölü" bir engine örneği üzerinde respawn/tracer-silme
+   * gibi kod parçaları sessizce çalışmaya devam eder (hem mantık hatası hem sızıntı).
+   */
+  private scheduleTimeout(fn: () => void, delayMs: number) {
+    const id = setTimeout(() => {
+      this.pendingTimeouts.delete(id);
+      fn();
+    }, delayMs);
+    this.pendingTimeouts.add(id);
+    return id;
+  }
+
   public cleanup() {
     this.stop();
     try { this.unlockPointer(); } catch { /* ignore */ }
+
+    for (const id of this.pendingTimeouts) clearTimeout(id);
+    this.pendingTimeouts.clear();
+
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('keyup', this.onKeyUp);
     document.removeEventListener('mousedown', this.onMouseDown);
@@ -530,8 +635,28 @@ export class GameEngine {
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('resize', this.onResize);
-    this.reflectiveFloor?.disposeFloor();
+    this.canvas.removeEventListener('click', this.onCanvasClick);
+
+    // Yansıtıcı zemin kendi render-target/material/geometry'sini serbest bırakır.
+    // Genel sahne temizliğinden ÖNCE sahneden çıkarılıyor ki aşağıdaki traversal
+    // onu bir kez daha (zararsız ama gereksiz) dispose etmeye çalışmasın.
+    if (this.reflectiveFloor) {
+      this.reflectiveFloor.disposeFloor();
+      this.scene.remove(this.reflectiveFloor);
+      this.reflectiveFloor = null;
+    }
     this.envRenderTarget?.dispose();
+    this.envRenderTarget = null;
+
+    // Sahnede kalan her şeyi (duvarlar, zemin, kurşun delikleri, mermi izleri,
+    // granatlar, uzak oyuncu modelleri) GPU belleğinden serbest bırak.
+    disposeObject3D(this.scene);
+    this.bulletHoles = [];
+    this.tracers = [];
+    this.grenades = [];
+    this.remotePlayers.clear();
+    this.cachedHitTargets = [];
+
     this.renderer.dispose();
   }
 
@@ -557,8 +682,12 @@ export class GameEngine {
   }
 
   private updateRecoilRecovery(dt: number, now: number) {
-    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir
-    if (this.isShooting) return;
+    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir.
+    // ÖNEMLİ: Eskiden `if (this.isShooting) return;` burada vardı — bu, düşük ateş
+    // hızlı silahlarda (sniper/pistol) tetik basılı tutulduğu sürece (fireRate
+    // beklemesi sırasında bile) toparlanmayı tamamen durduruyordu; kamera, atışlar
+    // arasında hiç yerleşmeden yukarı sürükleniyordu. Doğru koşul sadece "son atıştan
+    // bu yana yeterince zaman geçti mi" olmalı.
     if (now - this.lastShotTime < 60) return;
     const recover = Math.min(1, dt * 8);
     const dp = this.recoilPitch * recover;
@@ -585,18 +714,20 @@ export class GameEngine {
     this.direction.normalize();
 
     const speed = this.isScoped ? PLAYER_SPEED * 0.35 : PLAYER_SPEED;
-    const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
-    const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
 
-    const move = new THREE.Vector3()
-      .addScaledVector(forward, this.direction.z * speed * dt)
-      .addScaledVector(right, this.direction.x * speed * dt);
+    // Önceden her karede 3-4 yeni THREE.Vector3 allocate ediliyordu (GC baskısı).
+    // Artık sınıf seviyesinde önceden ayrılmış (scratch) vektörler yeniden kullanılıyor.
+    this._scratchForward.set(0, 0, -1).applyAxisAngle(this._scratchUp, this.yaw);
+    this._scratchRight.set(1, 0, 0).applyAxisAngle(this._scratchUp, this.yaw);
+    this._scratchMove.set(0, 0, 0)
+      .addScaledVector(this._scratchForward, this.direction.z * speed * dt)
+      .addScaledVector(this._scratchRight, this.direction.x * speed * dt);
 
-    const nextPos = this.camera.position.clone();
-    nextPos.x += move.x;
+    const nextPos = this._scratchNextPos.copy(this.camera.position);
+    nextPos.x += this._scratchMove.x;
     if (!this.collides(nextPos)) this.camera.position.x = nextPos.x;
     nextPos.copy(this.camera.position);
-    nextPos.z += move.z;
+    nextPos.z += this._scratchMove.z;
     if (!this.collides(nextPos)) this.camera.position.z = nextPos.z;
     this.camera.position.y = PLAYER_HEIGHT;
   }
@@ -617,6 +748,16 @@ export class GameEngine {
     if (this.isShooting) this.tryShoot(now);
   }
 
+  private rebuildHitTargets() {
+    this.cachedHitTargets = [];
+    for (const rp of this.remotePlayers.values()) {
+      rp.mesh.traverse((child) => {
+        if (child instanceof THREE.Mesh) this.cachedHitTargets.push(child);
+      });
+    }
+    this.hitTargetsDirty = false;
+  }
+
   private tryShoot(now = performance.now()) {
     if (this.state.isDead || this.isReloading) return;
     const weapon = WEAPONS[this.state.weaponId];
@@ -630,41 +771,18 @@ export class GameEngine {
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
-    // Ateş hızlı geldikçe birikim artar
-    if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
-    else this.consecutiveShots = 1;
-    const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
-    // Scope yaparken tepme yarıya iner
-    const scopeMul = this.isScoped ? 0.5 : 1;
-
-    // Dikey tepme (yukarı) + yatay yalpa
-    const vert = weapon.recoil * buildUp * scopeMul;
-    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
-    this.recoilPitch += vert;
-    this.recoilYaw += horiz;
-    this.pitch += vert;
-    this.yaw += horiz;
-    this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
-    this.camera.rotation.x = this.pitch;
-    this.camera.rotation.y = this.yaw;
-
-    const direction = new THREE.Vector3();
-    this.camera.getWorldDirection(direction);
-    const origin = this.camera.position.clone();
-
+    // ÖNEMLİ SIRALAMA DÜZELTMESİ:
+    // Eskiden recoil (tepme) kameraya UYGULANDIKTAN sonra raycast yapılıyordu —
+    // yani her mermi, kendi ürettiği tepmeden etkilenerek nişan noktasından
+    // sapmış bir yönde ateş ediyordu. Doğrusu: bu atışın isabetini MEVCUT
+    // (henüz tepmemiş) kamera yönelimiyle hesapla, tepmeyi SONRA uygula —
+    // tepme bir sonraki atışı ve görsel geri bildirimi etkilesin.
+    this.camera.getWorldDirection(this._scratchShotDir);
+    this._scratchShotOrigin.copy(this.camera.position);
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
 
-    // First check players
-    const targets: THREE.Object3D[] = [];
-    for (const rp of this.remotePlayers.values()) {
-      rp.mesh.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.userData.playerId = rp.id;
-          targets.push(child);
-        }
-      });
-    }
-    const playerHits = this.raycaster.intersectObjects(targets, false);
+    if (this.hitTargetsDirty) this.rebuildHitTargets();
+    const playerHits = this.raycaster.intersectObjects(this.cachedHitTargets, false);
     const wallHits = this.raycaster.intersectObjects(this.wallMeshes, false);
 
     const firstPlayer = playerHits[0];
@@ -680,11 +798,29 @@ export class GameEngine {
     }
 
     this.callbacks.onShoot({
-      origin: { x: origin.x, y: origin.y, z: origin.z },
-      direction: { x: direction.x, y: direction.y, z: direction.z },
+      origin: { x: this._scratchShotOrigin.x, y: this._scratchShotOrigin.y, z: this._scratchShotOrigin.z },
+      direction: { x: this._scratchShotDir.x, y: this._scratchShotDir.y, z: this._scratchShotDir.z },
       weaponId: weapon.id,
     });
-    this.spawnTracer(origin, direction);
+    this.spawnTracer(this._scratchShotOrigin, this._scratchShotDir);
+
+    // Tepmeyi raycast'ten SONRA uygula.
+    // Ateş hızlı geldikçe birikim artar
+    if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
+    else this.consecutiveShots = 1;
+    const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
+    // Scope yaparken tepme yarıya iner
+    const scopeMul = this.isScoped ? 0.5 : 1;
+
+    const vert = weapon.recoil * buildUp * scopeMul;
+    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
+    this.recoilPitch += vert;
+    this.recoilYaw += horiz;
+    this.pitch += vert;
+    this.yaw += horiz;
+    this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = this.yaw;
   }
 
   private addBulletHole(point: THREE.Vector3, normal: THREE.Vector3, target: THREE.Object3D) {
@@ -701,29 +837,37 @@ export class GameEngine {
     ring.quaternion.copy(q);
     this.scene.add(ring);
     this.bulletHoles.push(ring);
-    // limit
+    // limit — kapasite dolunca en eskisini hem sahneden hem GPU belleğinden kaldır
     if (this.bulletHoles.length > 120) {
       const old = this.bulletHoles.shift();
-      if (old) this.scene.remove(old);
+      if (old) {
+        this.scene.remove(old);
+        disposeObject3D(old);
+      }
     }
   }
 
   private spawnTracer(origin: THREE.Vector3, direction: THREE.Vector3) {
     const start = origin.clone().add(direction.clone().multiplyScalar(0.4));
-    const end = start.clone().add(direction.multiplyScalar(60));
+    const end = start.clone().add(direction.clone().multiplyScalar(60));
     const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
     const mat = new THREE.LineBasicMaterial({ color: COLORS.bullet, transparent: true, opacity: 0.7 });
     const line = new THREE.Line(geo, mat);
     this.scene.add(line);
     this.tracers.push(line);
-    setTimeout(() => {
+    this.scheduleTimeout(() => {
       this.scene.remove(line);
+      disposeObject3D(line);
       const idx = this.tracers.indexOf(line);
       if (idx > -1) this.tracers.splice(idx, 1);
     }, 80);
   }
 
   private throwGrenade(type: 'flash' | 'he') {
+    // Ölü bir oyuncu granat atamaz — önceden bu kontrol yalnızca klavye
+    // yolunda (onKeyDown) vardı; mobil `mobileThrow` yolunda YOKTU. Artık
+    // tek doğru kaynak burada, her iki giriş yolu için de geçerli.
+    if (this.state.isDead) return;
     // silaha bakmadan direkt at
     const dir = new THREE.Vector3();
     this.camera.getWorldDirection(dir);
@@ -781,6 +925,7 @@ export class GameEngine {
       if (now >= g.detonateAt) {
         this.detonateGrenade(g);
         this.scene.remove(g.mesh);
+        disposeObject3D(g.mesh);
         this.grenades.splice(i, 1);
       }
     }
@@ -796,22 +941,42 @@ export class GameEngine {
       }
     } else {
       gameAudio.explosion();
-      // HE — damage self if close, and remote via hit events
-      const dist = g.mesh.position.distanceTo(this.camera.position);
-      if (dist < 6) {
-        this.takeDamage(Math.round(80 * (1 - dist / 6)), this.playerId);
+
+      // Kendine hasar (yakınsa)
+      const selfDist = g.mesh.position.distanceTo(this.camera.position);
+      if (selfDist < HE_BLAST_RADIUS) {
+        this.takeDamage(Math.round(HE_MAX_DAMAGE * (1 - selfDist / HE_BLAST_RADIUS)), this.playerId);
       }
+
+      // KRİTİK DÜZELTME: Önceden HE granatı yalnızca kendine hasar veriyordu —
+      // `callbacks.onHit` uzak oyunculara HİÇ çağrılmıyordu, yani multiplayer'da
+      // granatlar rakipleri asla öldüremiyordu. Şimdi patlama yarıçapındaki her
+      // uzak oyuncuya, mesafeye göre azalan hasar uygulanıyor.
+      for (const rp of this.remotePlayers.values()) {
+        const dist = g.mesh.position.distanceTo(rp.mesh.position);
+        if (dist < HE_BLAST_RADIUS) {
+          const damage = Math.round(HE_MAX_DAMAGE * (1 - dist / HE_BLAST_RADIUS));
+          if (damage > 0) this.callbacks.onHit(rp.id, damage);
+        }
+      }
+
       // burst puff
       const geo = new THREE.SphereGeometry(1.5, 12, 12);
       const mat = new THREE.MeshBasicMaterial({ color: 0xff9944, transparent: true, opacity: 0.7 });
       const puff = new THREE.Mesh(geo, mat);
       puff.position.copy(g.mesh.position);
       this.scene.add(puff);
-      setTimeout(() => this.scene.remove(puff), 250);
+      this.scheduleTimeout(() => {
+        this.scene.remove(puff);
+        disposeObject3D(puff);
+      }, 250);
     }
   }
 
   private reload() {
+    // Ölü bir oyuncu şarjör değiştiremez — önceden bu kontrol yoktu; ölü
+    // karakter üzerinde `isReloading` durumu anlamsız şekilde değişebiliyordu.
+    if (this.state.isDead) return;
     if (this.isReloading) return;
     const weapon = WEAPONS[this.state.weaponId];
     if (!weapon || weapon.reloadTime === 0 || this.state.ammo >= weapon.clipSize) return;
@@ -828,8 +993,10 @@ export class GameEngine {
   }
 
   private equipWeapon(id: string) {
-    // 3D silah modeli kaldırıldı — HUD gerçekçi 2D silah görselini gösteriyor.
-    if (this.weaponModel) { this.camera.remove(this.weaponModel); this.weaponModel = null; }
+    // NOT: Önceki sürümde `weaponModel: THREE.Group | null` alanı ve onu
+    // kaldıran ölü (hiçbir yerde atanmayan) kontrol kodu vardı — HUD artık
+    // 2D silah görseli kullandığı için bu alan/kontrol tamamen kullanılmayan
+    // "junk code" idi; kaldırıldı.
     const def = WEAPONS[id];
     if (!def) return;
 
@@ -856,7 +1023,13 @@ export class GameEngine {
 
   public takeDamage(amount: number, sourceId: string) {
     if (this.state.isDead) return;
-    this.state.health = Math.max(0, this.state.health - amount);
+    // Negatif/NaN/Infinity bir `amount` (ör. bozuk ağ paketi veya hesaplama
+    // hatası) canın MAX_HEALTH üzerine çıkmasına ya da tanımsız davranışa yol
+    // açabilirdi — eski kod yalnızca `Math.max(0, ...)` ile ALT sınırı koruyordu,
+    // ÜST sınır hiç yoktu. Artık hem giriş doğrulanıyor hem de [0, MAX_HEALTH]
+    // aralığına sıkıştırılıyor.
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    this.state.health = THREE.MathUtils.clamp(this.state.health - amount, 0, MAX_HEALTH);
     gameAudio.hit();
     if (this.state.health <= 0) this.die(sourceId);
   }
@@ -864,9 +1037,17 @@ export class GameEngine {
   private die(killerId: string) {
     this.state.isDead = true;
     this.state.deaths++;
+    // Ölüm anında birikmiş tepme durumunu temizle — aksi halde respawn()
+    // sonrası kamera, ölmeden önce biriken recoilPitch/recoilYaw değerlerini
+    // "toparlamaya" çalışarak kendiliğinden sürüklenir (respawn() içinde de
+    // ayrıca sıfırlanıyor, burada da erken temizlemek update() döngüsünün
+    // ölüm anındaki son karesinde tutarsız bir toparlanma denemesini önler).
+    this.recoilPitch = 0;
+    this.recoilYaw = 0;
+    this.consecutiveShots = 0;
     try { this.unlockPointer(); } catch { /* ignore */ }
     this.callbacks.onDeath(killerId, this.playerId, this.state.weaponId);
-    setTimeout(() => this.respawn(), RESPAWN_TIME);
+    this.scheduleTimeout(() => this.respawn(), RESPAWN_TIME);
   }
 
   public respawn() {
@@ -876,6 +1057,12 @@ export class GameEngine {
     this.pitch = 0;
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
+    // Bkz. die() — kalan tepme durumu sıfırlanmazsa yeni spawn'da kamera
+    // kendiliğinden hareket eder (updateRecoilRecovery eski değerleri "toparlamaya"
+    // çalışır). Burada da güvence altına alınıyor.
+    this.recoilPitch = 0;
+    this.recoilYaw = 0;
+    this.consecutiveShots = 0;
     this.isScoped = false;
     this.camera.fov = 75;
     this.camera.updateProjectionMatrix();
@@ -937,6 +1124,9 @@ export class GameEngine {
     neck.position.y = 1.5; neck.userData.playerId = state.id;
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.32, 0.3), skinMat);
     head.position.y = 1.72; head.userData.playerId = state.id;
+    // İsimle etiketleniyor ki updateRemotePlayer() sihirli bir children[7]
+    // index'ine güvenmek yerine bu mesh'i güvenle bulabilsin (bkz. aşağıda).
+    head.name = 'head';
     // Kask
     const helmet = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.14, 0.34),
@@ -968,6 +1158,8 @@ export class GameEngine {
       targetRotation: { x: state.rotation.x, y: state.rotation.y },
       state,
     });
+    // Vuruş hedef önbelleği artık geçersiz — bir sonraki atışta yeniden kurulacak.
+    this.hitTargetsDirty = true;
   }
 
   public updateRemotePlayer(state: PlayerState) {
@@ -977,13 +1169,23 @@ export class GameEngine {
     rp.targetPosition.set(state.position.x, 0, state.position.z);
     rp.targetRotation.x = state.rotation.x;
     rp.targetRotation.y = state.rotation.y;
-    const head = rp.mesh.children[7];
+    // Eskiden `rp.mesh.children[7]` — grup çocuklarının ekleniş sırasına bağlı
+    // sihirli bir index'ti; gövde parçalarının ekleme sırası değişirse (ör. yeni
+    // bir aksesuar eklenirse) SESSİZCE yanlış mesh'i döndürür, derleme hatası
+    // vermez, sadece kafa dönüşü bozulur. İsimle arama, bu sınıf hatasını
+    // yapısal olarak imkansız kılar.
+    const head = rp.mesh.getObjectByName('head');
     if (head) head.rotation.x = state.rotation.x;
   }
 
   public removeRemotePlayer(id: string) {
     const rp = this.remotePlayers.get(id);
-    if (rp) { this.scene.remove(rp.mesh); this.remotePlayers.delete(id); }
+    if (rp) {
+      this.scene.remove(rp.mesh);
+      disposeObject3D(rp.mesh); // Önceden dispose edilmiyordu -> GPU bellek sızıntısı
+      this.remotePlayers.delete(id);
+      this.hitTargetsDirty = true;
+    }
   }
 
   private updateRemotePlayers(dt: number) {
@@ -1003,4 +1205,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-    }
+        }
