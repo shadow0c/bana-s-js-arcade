@@ -4,10 +4,9 @@ export const Route = createFileRoute('/')({
   component: Index,
   head: () => ({
     meta: [
-      { title: 'CS 2 Mobile - Tarayıcıda 3D FPS' },
-      { name: 'description', content: 'CS 2 Mobile: tarayıcıda çalışan, mobil destekli, 3D çok oyunculu FPS arena.' },
+      { title: 'CS 2 Mobile' },
+      { name: 'description', content: 'CS 2 Mobile: Beta sürümü.' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover' },
-      { property: 'og:title', content: 'CS 2 Mobile - Tarayıcıda 3D FPS' },
       { property: 'og:description', content: 'Mobil ve masaüstünden oyna: dust2 esintili harita, silahlar, granatlar.' },
       { property: 'og:type', content: 'website' },
       { name: 'twitter:card', content: 'summary_large_image' },
@@ -23,7 +22,7 @@ function Index() {
           <span className="text-orange-500">CS 2</span>{' '}
           <span className="text-blue-500">MOBILE</span>
         </h1>
-        <p className="mb-8 text-lg text-gray-400">Tarayıcıda 3D çok oyunculu FPS — mobil destekli</p>
+        <p className="mb-8 text-lg text-gray-400">Tarayıcıda CS 2 Multi-player</p>
         <Link
           to="/game"
           className="inline-flex items-center justify-center rounded-xl bg-green-600 px-8 py-4 text-xl font-bold transition hover:bg-green-500"
