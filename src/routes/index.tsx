@@ -7,7 +7,6 @@ export const Route = createFileRoute('/')({
       { title: 'CS 2 Mobile' },
       { name: 'description', content: 'CS 2 Mobile: Beta sürümü.' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover' },
-      { property: 'og:description', content: 'Mobil ve masaüstünden oyna: dust2 esintili harita, silahlar, granatlar.' },
       { property: 'og:type', content: 'website' },
       { name: 'twitter:card', content: 'summary_large_image' },
     ],
