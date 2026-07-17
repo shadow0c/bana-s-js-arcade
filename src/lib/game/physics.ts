@@ -1,44 +1,6 @@
-// src/lib/game/physics.ts
-//
-// ════════════════════════════════════════════════════════════════════════════
-//  AAA SEVİYESİ FİZİK MOTORU — sıfırdan yazıldı (Cannon/Ammo/Rapier YOK)
-// ════════════════════════════════════════════════════════════════════════════
-//
-// Bu dosya tarayıcıda çalışan, saf TypeScript ile yazılmış, GL-bağımsız bir
-// rijit-cisim fiziği simülatörüdür. Aşağıdaki eksiklikleri kapatır:
-//
-//   1) SÜRTÜNME + İVME  → kapalı form:  v_{t+1} = v_t · e^{-k·Δt} + (F/m)·Δt
-//      tuş bırakılınca anında durmuyor; yere basınca kayma (ground friction)
-//      ve havadayken hava direnci (air drag) ayrı katsayılarla modellenir.
-//
-//   2) CAPSULE COLLIDER   → karakterler kutu (Box3) değil, KAPSÜL.
-//      merdiven/engebeli zeminde takılma yok, eğimli yüzeyde pürüzsüz kayma.
-//
-//   3) CCD (Sweep Test)   → yüksek hızda ince duvarların içinden geçme
-//      (tunneling) yok. Cisim hareket ederken aradaki hacim taranır.
-//
-//   4) SPATIAL HASH       → O(n²) brute-force yerine grid tabanlı geniş-faz
-//      darbe tespiti. 10 000+ statik duvar olsa bile darbe testi O(1) civarı.
-//
-//   5) STATIC BODY FLAG    → statik objeler "immutable" kabul edilir; hareketli
-//      cisimler ASLA statik hacme nüfuz edemez (ground penetration fix).
-//
-//   6) DUVAR PARALEL KAYMA → karakter duvara dik yürürken eksen-eksen çözüm;
-//      kayma (sliding) gerçek fizikteki gibi korunur.
-//
-//   7) KAPALI FORM ENTEGRASYON → v_{t+1} = v_t·e^{-kΔt}+(F/m)·Δt
-//      kapalı formun matematik türevi ∫f(x)dx=0..Δt üzerinden türetilir;
-//      böylece Δt büyük olsa bile enerji monoton olarak söner (şişmez).
-//
-// FİZİK / RENDER AYRIMI: Bu dosya hiçbir THREE.Camera, THREE.Scene, THREE.Renderer
-// referansı içermez. Konumlar THREE.Vector3 olarak temsil edilse de, render
-// tarafı sadece pozisyonu okur, fizik motoru kendi içinde kapalı çalışır.
-
 import * as THREE from 'three';
 
-// ════════════════════════════════════════════════════════════════════════════
-//  1) Matematiksel Temel — Vec3 (THREE.Vector3 üzerinde ince bir sarmalayıcı)
-// ════════════════════════════════════════════════════════════════════════════
+//═══════════════════════════════════════════════════════════════
 //
 // Neden ayrı bir Vec3? Çünkü fizik motoru 60–120 Hz'de binlerce çarpma üretir.
 // Üç bileşen için ayrı `number` tutmak (Struct-of-Arrays) GC baskısını ve
@@ -643,8 +605,11 @@ export function sweepCapsuleVsWorld(
   c: Capsule,
   delta: THREE.Vector3,
   world: PhysicsWorld,
-  excludeBody?: RigidBody,
 ): SweepHit | null {
+  // NOT: `excludeBody?: RigidBody` parametresi kaldırıldı. `world.spatial`
+  // yalnızca StaticCollider saklıyor (bkz. PhysicsWorld.addStatic), bir
+  // RigidBody bu koleksiyonda yapısal olarak asla bulunamaz — karşılaştırma
+  // hem derleme hatasıydı (TS2367) hem çalışma zamanında hep false'du.
   _sweepDelta.copy(delta);
   const totalLen = _sweepDelta.length();
   if (totalLen < 1e-7) return null;
@@ -687,7 +652,6 @@ export function sweepCapsuleVsWorld(
     const tmpBox = new THREE.Box3(_sweepStart, _sweepEnd);
     const cands = world.spatial.queryAABB(tmpBox);
     for (const col of cands) {
-      if (col === excludeBody) continue;
       const contact = capsuleVsAABB(c, col);
       if (contact && contact.penetration > 0) {
         const t = Math.min(1, (t0 + subLen * 0.5) / totalLen);
@@ -898,8 +862,9 @@ export class PhysicsWorld {
       // 5) Hızın normal bileşenini sıfırla (veya yansıt)
       const vn = v3.dot(body.velocity, ct.normal);
       if (vn < 0) {
-        // Gelen hız: yansıt
-        const restitution = col.restitution ?? 0;
+        // Gelen hız: yansıt. Restitüsyon HAREKETLİ cismin materyal özelliğidir
+        // (StaticCollider'da böyle bir alan yok, yalnızca friction var).
+        const restitution = body.material.restitution;
         const j = -(1 + restitution) * vn;
         body.velocity.x += ct.normal.x * j;
         body.velocity.y += ct.normal.y * j;
@@ -947,6 +912,14 @@ export class PhysicsWorld {
 //   - CCD sweep (yüksek hızda otomatik)
 //   - Ground clamp (penetrasyon önleme)
 
+/** Harita dış sınırları (constants.ts'teki MAP_BOUNDS ile aynı şekil). */
+export interface MapBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
 export interface PlayerMovementConfig {
   radius: number;
   height: number;
@@ -965,6 +938,13 @@ export interface MovementInput {
   touchX: number;
   touchY: number;
 }
+
+// Zıplama anlık dikey hızı (m/s). Yükseklik kanıtı: v_y(t) = JUMP_SPEED - g*t,
+// tepe t* = JUMP_SPEED/g'de; h = JUMP_SPEED^2 / (2*g). g=9.81 ile h ≈ 1.83 m —
+// oyuncunun küçük/orta boy kutuların (constants.ts'teki `useCrate` sınırı h≤2.5)
+// üzerine zıplayabilmesi için yeterli, ama savunmasız şekilde her duvarı aşacak
+// kadar değil.
+const JUMP_SPEED = 6.0;
 
 export class PlayerMovementController {
   public readonly position = new THREE.Vector3();
@@ -1069,7 +1049,41 @@ export class PlayerMovementController {
     // Pozisyonu güncelle (fizik motoru adımı motor.step() ile çağrılır,
     // burada sadece externalAccel'i biriktirip position'ı okuyoruz).
     this.world.step(dt);
+
+    // Savunma hattı: `config.bounds` daha önce tanımlanıp hiç okunmuyordu
+    // (dead field). Harita sınır duvarları (MAP_WALLS) normalde bunu zaten
+    // engeller, ama bir köşe/CCD boşluğu gövdeyi dışarı sızdırırsa oyuncunun
+    // haritanın dışına düşmesini önleyen ucuz bir son çare olarak ekliyoruz.
+    const r = this.config.radius;
+    const { minX, maxX, minZ, maxZ } = this.config.bounds;
+    if (this.body.position.x < minX + r) { this.body.position.x = minX + r; this.body.velocity.x = Math.max(0, this.body.velocity.x); }
+    else if (this.body.position.x > maxX - r) { this.body.position.x = maxX - r; this.body.velocity.x = Math.min(0, this.body.velocity.x); }
+    if (this.body.position.z < minZ + r) { this.body.position.z = minZ + r; this.body.velocity.z = Math.max(0, this.body.velocity.z); }
+    else if (this.body.position.z > maxZ - r) { this.body.position.z = maxZ - r; this.body.velocity.z = Math.min(0, this.body.velocity.z); }
+
     this.position.copy(this.body.position);
+  }
+
+  /**
+   * Zıplama isteği kuyruğa alınır ve sadece yerdeyken uygulanır (çift
+   * zıplama/uçma engellenir). `update()`'ten önce çağrılmalı (ör. Space
+   * tuşu basıldığında) — bir sonraki `update()` çağrısında yeni hız
+   * `world.step()`'e girer.
+   */
+  requestJump(): void {
+    if ((this.body.flags & FLAG_GROUNDED) === 0) return;
+    this.body.velocity.y = JUMP_SPEED;
+    this.body.flags &= ~FLAG_GROUNDED;
+  }
+
+  /** Ölüm/respawn veya editör "test modu"ndan çıkış için: hızı sıfırlar ve ışınlar. */
+  teleport(position: THREE.Vector3): void {
+    this.body.position.copy(position);
+    this.position.copy(position);
+    this.body.velocity.set(0, 0, 0);
+    this.body.externalAccel.set(0, 0, 0);
+    this.body.flags &= ~FLAG_SLIDING;
+    this.body.flags |= FLAG_GROUNDED; // spawn noktalarının zeminde olduğu varsayılır
   }
 
   /** Eski API uyumu. */
@@ -1104,10 +1118,5 @@ export class PlayerMovementController {
 //  11) Dışa Aktarılan Public API
 // ════════════════════════════════════════════════════════════════════════════
 
-export type { MapBounds };
-
-/**
- * Uyumluluk için eski `MapBounds` arayüzünü koruyoruz.
- * Yeni API doğrudan `PhysicsWorld` + `StaticCollider` üzerinden çalışır.
- */
-export { PhysicsWorld, SpatialHash };
+// `PhysicsWorld`, `SpatialHash`, `MapBounds` zaten tanımlandıkları yerde
+// `export` edildi; burada ikinci kez export etmek derlemeyi bozar (TS2323).
