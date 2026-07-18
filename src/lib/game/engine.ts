@@ -15,6 +15,7 @@ import {
 import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
 import { PhysicalReflectiveFloor } from './reflectiveFloor';
+import { EditorBridgeClient } from './editorBridgeClient';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
@@ -125,6 +126,7 @@ export class GameEngine {
   private remotePlayers = new Map<string, RemotePlayer>();
   private colliders: THREE.Box3[] = [];
   private wallMeshes: THREE.Mesh[] = [];
+  private editorBridge: EditorBridgeClient | null = null;
   private bulletHoles: THREE.Mesh[] = [];
   private grenades: Grenade[] = [];
 
@@ -132,11 +134,6 @@ export class GameEngine {
   // sadece oyuncu katılıp/ayrıldığında geçersiz kılınır (bkz. hitTargetsDirty).
   private cachedHitTargets: THREE.Object3D[] = [];
   private hitTargetsDirty = true;
-
-  // Inspector (sahne düzenleyici) açıkken true olur: WASD hareketi, ateş etme
-  // ve pointer-lock devre dışı kalır ki fare TransformControls gizmo'larıyla
-  // serbestçe etkileşebilsin. Inspector kapanınca normal oyun akışı devam eder.
-  private inspectorModeActive = false;
 
   private isMobile = false;
   private reflectiveFloor: PhysicalReflectiveFloor | null = null;
@@ -205,6 +202,45 @@ export class GameEngine {
     this.setupScene();
     this.setupControls();
     this.equipWeapon(DEFAULT_WEAPON);
+    this.maybeConnectEditorBridge();
+  }
+
+  /**
+   * Yalnızca `VITE_EDITOR_BRIDGE_URL` env değişkeni TANIMLIYSA editör
+   * köprüsüne bağlanır. Prod build'de bu değişken tanımlanmamalı — oyuncunun
+   * istemcisi hiçbir zaman editöre bağlanmaya çalışmasın. Geliştirme
+   * sırasında editörle canlı senkron test etmek istersen `.env.local`'e
+   * `VITE_EDITOR_BRIDGE_URL=ws://localhost:8787` ekle.
+   */
+  private maybeConnectEditorBridge() {
+    const url = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_EDITOR_BRIDGE_URL;
+    if (!url) return;
+
+    this.editorBridge = new EditorBridgeClient(
+      url,
+      () => MAP_WALLS,
+      (index, transform) => {
+        // [LOGIC ERROR FIX] wallMeshes[0] zemin (floor) mesh'idir (MAP_WALLS
+        // döngüsünden ÖNCE push edildi) — bu yüzden MAP_WALLS[index]'e karşılık
+        // gelen gerçek mesh wallMeshes[index] DEĞİL, wallMeshes[index + 1]'dir.
+        // `colliders` dizisinde böyle bir kayma YOK (yalnızca MAP_WALLS
+        // döngüsünde dolduruluyor), o yüzden `colliders[index]` doğrudan doğru.
+        const mesh = this.wallMeshes[index + 1];
+        const original = MAP_WALLS[index];
+        if (!mesh || !original) return;
+        mesh.position.set(transform.position.x, transform.position.y, transform.position.z);
+        // Editörden gelen `scale`, orijinal (w,h,d) birimiyle aynı mutlak boyuttur;
+        // mesh.scale ÇARPAN olduğu için orijinal boyuta bölerek doğru oranı uyguluyoruz.
+        mesh.scale.set(
+          transform.scale.x / original.w,
+          transform.scale.y / original.h,
+          transform.scale.z / original.d,
+        );
+        mesh.rotation.y = THREE.MathUtils.degToRad(transform.rotationY);
+        this.colliders[index] = new THREE.Box3().setFromObject(mesh);
+      },
+    );
+    this.editorBridge.connect();
   }
 
   private createInitialState(): PlayerState {
@@ -526,7 +562,6 @@ export class GameEngine {
   };
 
   private onMouseDown = (e: MouseEvent) => {
-    if (this.inspectorModeActive) return;
     if (e.button === 0) {
       this.isShooting = true;
       this.tryShoot();
@@ -599,64 +634,6 @@ export class GameEngine {
     return isTouch ? true : this.mouseLocked;
   }
 
-  // ============ INSPECTOR / EDITOR PUBLIC API ============
-  // Bu blok yalnızca Inspector (src/lib/game/inspector/Inspector.ts) tarafından
-  // kullanılır. Sahneye doğrudan erişim vererek inspector'ın küp eklemesi,
-  // asset import etmesi ve materyal/renk düzenlemesi mümkün olur.
-
-  public getScene(): THREE.Scene { return this.scene; }
-  public getCamera(): THREE.PerspectiveCamera { return this.camera; }
-  public getRenderer(): THREE.WebGLRenderer { return this.renderer; }
-  /** Inspector'ın renk boyayabilmesi/seçebilmesi için MEVCUT harita duvarlarının referansı (kopya değil). */
-  public getWallMeshes(): THREE.Mesh[] { return this.wallMeshes; }
-
-  /**
-   * Inspector'daki "serbest bakış" (sağ-tık sürükle) bunu çağırarak kamerayı
-   * döndürür. Doğrudan `camera.rotation` değiştirmek yerine bunun üzerinden
-   * gitmek ÖNEMLİ: aksi halde inspector kapatıldığında `this.yaw`/`this.pitch`
-   * (hareket ve recoil hesaplarının temel aldığı iç durum) eskide kalır ve
-   * oyuncu normal moda dönünce kamera aniden "sıçrar" (senkron bozulması).
-   */
-  public getYawPitch() { return { yaw: this.yaw, pitch: this.pitch }; }
-  public setYawPitch(yaw: number, pitch: number) {
-    this.yaw = yaw;
-    this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
-    this.camera.rotation.y = this.yaw;
-    this.camera.rotation.x = this.pitch;
-  }
-
-  /** Inspector'ın eklediği bir küp/mesh'i çarpışma listesine dahil eder (oyuncu artık içinden geçemez). */
-  public registerCollider(box: THREE.Box3) {
-    this.colliders.push(box);
-  }
-
-  public unregisterCollider(box: THREE.Box3) {
-    const idx = this.colliders.indexOf(box);
-    if (idx > -1) this.colliders.splice(idx, 1);
-  }
-
-  /** Inspector'ın eklediği bir mesh'i mermi/raycast hedefi (duvar gibi) sayar. */
-  public registerWallMesh(mesh: THREE.Mesh) {
-    this.wallMeshes.push(mesh);
-  }
-
-  public unregisterWallMesh(mesh: THREE.Mesh) {
-    const idx = this.wallMeshes.indexOf(mesh);
-    if (idx > -1) this.wallMeshes.splice(idx, 1);
-  }
-
-  /** true iken oyuncu hareketi/ateşi/pointer-lock devre dışı kalır (bkz. update()). */
-  public setInspectorModeActive(active: boolean) {
-    this.inspectorModeActive = active;
-    if (active) {
-      this.moveForward = this.moveBackward = this.moveLeft = this.moveRight = false;
-      this.isShooting = false;
-      try { this.unlockPointer(); } catch { /* ignore */ }
-    }
-  }
-
-  public isInspectorModeActive() { return this.inspectorModeActive; }
-
   public start() {
     if (this.isRunning) return;
     this.isRunning = true;
@@ -687,6 +664,7 @@ export class GameEngine {
   public cleanup() {
     this.stop();
     try { this.unlockPointer(); } catch { /* ignore */ }
+    this.editorBridge?.disconnect();
 
     for (const id of this.pendingTimeouts) clearTimeout(id);
     this.pendingTimeouts.clear();
@@ -735,13 +713,11 @@ export class GameEngine {
 
   private update(dt: number, now: number) {
     if (this.state.isDead) return;
-    if (!this.inspectorModeActive) {
-      this.updateMovement(dt);
-      this.updateShooting(now);
-      this.updateReload(now);
-      this.updateRecoilRecovery(dt, now);
-      this.updateWeaponModel(dt);
-    }
+    this.updateMovement(dt);
+    this.updateShooting(now);
+    this.updateReload(now);
+    this.updateRecoilRecovery(dt, now);
+    this.updateWeaponModel(dt);
     this.updateRemotePlayers(dt);
     this.updateGrenades(dt, now);
     this.broadcastStateIfNeeded(now);
@@ -1276,4 +1252,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-      }
+  }
