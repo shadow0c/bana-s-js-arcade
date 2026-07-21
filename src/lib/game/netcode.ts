@@ -286,7 +286,7 @@ export class PredictionBuffer {
     const newState: PlayerState = {
       ...predicted,
       position: { ...snap.position },
-      velocity: { ...snap.velocity },
+      
       rotation: { ...snap.rotation },
       health: snap.health,
     };
