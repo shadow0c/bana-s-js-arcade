@@ -218,7 +218,7 @@ export class GameEngine {
 
     this.editorBridge = new EditorBridgeClient(
       url,
-      () => MAP_WALLS,
+      () => MAP_WALLS.map((w) => ({ ...w, y: 0 })),
       (index, transform) => {
         // [LOGIC ERROR FIX] wallMeshes[0] zemin (floor) mesh'idir (MAP_WALLS
         // döngüsünden ÖNCE push edildi) — bu yüzden MAP_WALLS[index]'e karşılık
