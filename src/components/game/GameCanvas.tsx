@@ -177,45 +177,64 @@ export function GameCanvas() {
       <canvas ref={canvasRef} className="block h-full w-full" />
 
       {!started && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/85 p-4 text-white">
-          <div className="w-full max-w-sm rounded-2xl bg-gradient-to-b from-neutral-900 to-neutral-950 p-6 shadow-2xl ring-1 ring-white/10">
-            <h1 className="mb-1 text-center text-4xl font-black tracking-tight">
+        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-black via-neutral-950 to-black p-4 text-white">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-neutral-950/90 p-8 shadow-2xl backdrop-blur">
+            <h1 className="mb-1 text-center text-5xl font-black tracking-tight">
               <span className="text-orange-500">CS 2</span> <span className="text-blue-500">MOBILE</span>
             </h1>
-            <p className="mb-6 text-center text-xs text-gray-400">Tarayıcıda 3D çok oyunculu FPS</p>
+            <p className="mb-8 text-center text-xs uppercase tracking-[0.3em] text-gray-500">Counter-Strike Web</p>
 
-            <label className="mb-1 block text-sm text-gray-300">Oyuncu Adı</label>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-widest text-gray-400">Oyuncu Adı</label>
             <input
               value={playerName}
               onChange={(e) => setPlayerName(e.target.value)}
-              className="mb-4 w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white outline-none focus:border-orange-500"
+              placeholder="Adını yaz..."
+              className="mb-6 w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-gray-600 focus:border-orange-500"
               maxLength={16}
+              autoFocus
             />
 
-            <div className="mb-6 rounded-lg bg-white/5 p-3 text-center">
-              <div className="text-xs text-gray-400">Takımın (rastgele atandı)</div>
-              <div className={`mt-1 text-xl font-black ${assignedTeam === 't' ? 'text-orange-500' : assignedTeam === 'ct' ? 'text-blue-500' : 'text-gray-500'}`}>
-                {assignedTeam === 't' ? 'TERÖRİST' : assignedTeam === 'ct' ? 'ANTI-TERÖRİST' : '...'}
+            <div className="mb-6">
+              <div className="mb-2 text-xs font-bold uppercase tracking-widest text-gray-400">Takım Seç</div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setAssignedTeam('t')}
+                  className={`rounded-lg border-2 p-4 text-center transition ${
+                    assignedTeam === 't'
+                      ? 'border-orange-500 bg-orange-500/20'
+                      : 'border-white/10 bg-white/5 hover:border-orange-500/50'
+                  }`}
+                >
+                  <div className="text-lg font-black text-orange-500">T</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-300">Terörist</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAssignedTeam('ct')}
+                  className={`rounded-lg border-2 p-4 text-center transition ${
+                    assignedTeam === 'ct'
+                      ? 'border-blue-500 bg-blue-500/20'
+                      : 'border-white/10 bg-white/5 hover:border-blue-500/50'
+                  }`}
+                >
+                  <div className="text-lg font-black text-blue-500">CT</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-300">Anti-Terör</div>
+                </button>
               </div>
             </div>
 
             <button
               onClick={startGame}
-              className="w-full rounded-lg bg-green-600 py-3 text-lg font-bold text-white transition hover:bg-green-500"
+              disabled={!playerName.trim() || !assignedTeam}
+              className="w-full rounded-lg bg-green-600 py-3 text-lg font-black uppercase tracking-widest text-white transition hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-gray-500"
             >
-              OYNA
+              Oyna
             </button>
-
-            <div className="mt-4 text-center text-[11px] leading-relaxed text-gray-500">
-              {isMobile ? (
-                <>Sol joystick: hareket • Sağ ekran: nişan • ATEŞ butonu • F Flash • G HE</>
-              ) : (
-                <>WASD hareket • Mouse nişan • Sol tık ateş • Sağ tık scope • R reload • B satın al • F Flash • G HE • Tab skor • ~ Sahne Editörü</>
-              )}
-            </div>
           </div>
         </div>
       )}
+
 
       {started && !isMobile && !isLocked && !showBuy && (
         <div
