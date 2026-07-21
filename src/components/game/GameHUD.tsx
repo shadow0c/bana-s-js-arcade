@@ -71,15 +71,34 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
         </div>
       )}
 
-      {/* Weapon viewmodel image */}
+      {/* Weapon viewmodel with two-hand grip */}
       {WEAPON_IMG[state.weaponId] && !state.isDead && (
-        <img
-          src={WEAPON_IMG[state.weaponId]}
-          alt={WEAPONS[state.weaponId]?.name}
-          className="pointer-events-none absolute bottom-24 right-4 h-40 w-auto select-none drop-shadow-2xl sm:bottom-28 sm:right-8 sm:h-56"
+        <div
+          className="pointer-events-none absolute bottom-16 right-2 flex items-end sm:bottom-20 sm:right-6"
           style={{ transform: state.isScoped ? 'translateY(140%)' : 'none', transition: 'transform 120ms' }}
-        />
+        >
+          <div className="relative">
+            <img
+              src={WEAPON_IMG[state.weaponId]}
+              alt={WEAPONS[state.weaponId]?.name}
+              className="relative z-10 h-44 w-auto select-none drop-shadow-2xl sm:h-60"
+            />
+            {/* Front (support) hand — gloved, grips the barrel */}
+            <div className="absolute bottom-4 left-6 z-20 h-14 w-10 rotate-[18deg] rounded-t-full rounded-b-md bg-gradient-to-b from-neutral-800 via-neutral-900 to-black shadow-[inset_-4px_-2px_6px_rgba(0,0,0,0.6),0_4px_10px_rgba(0,0,0,0.7)] sm:bottom-6 sm:left-10 sm:h-20 sm:w-14">
+              <div className="absolute inset-x-1 top-2 h-1 rounded bg-white/5" />
+              <div className="absolute inset-x-1 top-5 h-1 rounded bg-white/5" />
+            </div>
+            {/* Rear (trigger) hand + forearm sleeve */}
+            <div className="absolute -bottom-3 right-6 z-20 h-16 w-11 -rotate-[10deg] rounded-t-full rounded-b-md bg-gradient-to-b from-neutral-800 via-neutral-900 to-black shadow-[inset_-4px_-2px_6px_rgba(0,0,0,0.6),0_4px_10px_rgba(0,0,0,0.7)] sm:-bottom-4 sm:right-10 sm:h-24 sm:w-16">
+              <div className="absolute inset-x-1 top-2 h-1 rounded bg-white/5" />
+              <div className="absolute inset-x-1 top-5 h-1 rounded bg-white/5" />
+            </div>
+            {/* Sleeve behind rear hand */}
+            <div className="absolute -bottom-8 right-2 z-0 h-10 w-24 rotate-[8deg] rounded-md bg-gradient-to-r from-neutral-950 via-neutral-800 to-neutral-950 sm:-bottom-10 sm:right-4 sm:h-14 sm:w-32" />
+          </div>
+        </div>
       )}
+
 
       {/* Bottom HUD */}
       <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-4 sm:p-6">

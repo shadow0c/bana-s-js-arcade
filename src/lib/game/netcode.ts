@@ -286,7 +286,7 @@ export class PredictionBuffer {
     const newState: PlayerState = {
       ...predicted,
       position: { ...snap.position },
-      velocity: { ...snap.velocity },
+      
       rotation: { ...snap.rotation },
       health: snap.health,
     };
@@ -688,4 +688,6 @@ export class NetcodeServer {
   private readonly serverTimeStart = Date.now();
   private playerHistoryMs = 0;
 
-  constructor(
+  constructor(private readonly physics: IServerPhysics) {}
+}
+

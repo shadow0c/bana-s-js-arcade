@@ -29,25 +29,7 @@ function Index() {
           OYNA
         </Link>
       </div>
-
-      <div className="mt-12 grid max-w-2xl gap-4 text-sm text-gray-500 sm:grid-cols-2">
-        <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Masaüstü</strong>
-          WASD hareket, Mouse nişan, Sol tık ateş, Sağ tık scope, R reload, F flash, G HE
-        </div>
-        <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Mobil</strong>
-          Sol joystick hareket, sağ ekran nişan, ATEŞ + SCOPE + FLASH + HE butonları
-        </div>
-        <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Silahlar</strong>
-          Glock, Desert Eagle, AK-47, M4A4, AWP, Bıçak + Flashbang & HE Granat
-        </div>
-        <div className="rounded-lg bg-white/5 p-4">
-          <strong className="block text-white">Harita</strong>
-          Dust2 esintili A / B siteleri, texture'lı duvarlar, mermi izleri
-        </div>
-      </div>
     </div>
   );
 }
+
