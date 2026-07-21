@@ -129,27 +129,13 @@ export function GameCanvas() {
     engine.start();
     if (!isMobile) engine.lockPointer();
 
-    // Sahne Inspector'ı: masaüstünde `~` (backtick) tuşuyla açılır/kapanır.
-    // Mobilde devre dışı (dokunmatik editör deneyimi ayrı bir iş, kapsam dışı).
-    const inspector = !isMobile ? new SceneInspector(engine) : null;
-    inspectorRef.current = inspector;
-    const onToggleInspector = (e: KeyboardEvent) => {
-      if (e.key === '`') inspector?.toggle();
-    };
-    if (inspector) window.addEventListener('keydown', onToggleInspector);
-
     return () => {
-      if (inspector) {
-        window.removeEventListener('keydown', onToggleInspector);
-        inspector.disposeAll();
-        inspector.close();
-      }
-      inspectorRef.current = null;
       engine.cleanup();
       void network.cleanup();
       engineRef.current = null;
       networkRef.current = null;
     };
+
   }, [started, playerName, assignedTeam, addKill, triggerFlash, isMobile]);
 
   useEffect(() => {
