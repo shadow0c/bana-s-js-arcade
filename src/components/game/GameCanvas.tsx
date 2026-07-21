@@ -2,10 +2,10 @@ import { GameEngine } from '@/lib/game/engine';
 import { GameNetwork } from '@/lib/game/network';
 import { WEAPONS, KILL_REWARD } from '@/lib/game/constants';
 import type { PlayerState, Team, KillFeedEntry } from '@/lib/game/types';
-import { SceneInspector } from '@/lib/game/inspector/Inspector';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GameHUD } from './GameHUD';
 import { MobileControls } from './MobileControls';
+
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
@@ -19,17 +19,11 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const networkRef = useRef<GameNetwork | null>(null);
-  const inspectorRef = useRef<SceneInspector | null>(null);
   const isMobile = useIsMobile();
 
   const [playerName, setPlayerName] = useState('');
   const [assignedTeam, setAssignedTeam] = useState<Team | null>(null);
 
-  // Hydration-safe: pick name+team only after mount
-  useEffect(() => {
-    setPlayerName(randomName());
-    setAssignedTeam(randomTeam());
-  }, []);
   const [started, setStarted] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
