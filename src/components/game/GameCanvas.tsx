@@ -11,16 +11,6 @@ function generateId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function randomName() {
-  const adjectives = ['Hızlı', 'Sessiz', 'Vahşi', 'Gizli', 'Ölümcül', 'Çabuk', 'Soylu', 'Yabani'];
-  const nouns = ['Kurt', 'Kartal', 'Yılan', 'Aslan', 'Kaplan', 'Avcı', 'Mermi', 'Hayalet'];
-  return `${adjectives[Math.floor(Math.random() * adjectives.length)]}${nouns[Math.floor(Math.random() * nouns.length)]}`;
-}
-
-function randomTeam(): Team {
-  return Math.random() < 0.5 ? 't' : 'ct';
-}
-
 function useIsMobile() {
   return useMemo(() => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches, []);
 }
