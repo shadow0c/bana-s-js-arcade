@@ -825,12 +825,12 @@ export class GameEngine {
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
-    // ÖNEMLİ SIRALAMA DÜZELTMESİ:
-    // Eskiden recoil (tepme) kameraya UYGULANDIKTAN sonra raycast yapılıyordu —
-    // yani her mermi, kendi ürettiği tepmeden etkilenerek nişan noktasından
-    // sapmış bir yönde ateş ediyordu. Doğrusu: bu atışın isabetini MEVCUT
-    // (henüz tepmemiş) kamera yönelimiyle hesapla, tepmeyi SONRA uygula —
-    // tepme bir sonraki atışı ve görsel geri bildirimi etkilesin.
+    // Fare/dokunmatik tetik ANLIK bir olaydır — frame update() dışında da çağrılır.
+    // camera.position/rotation henüz o karede değişmemiş olsa bile matrixWorld'ün
+    // GÜNCEL olduğundan burada da emin oluyoruz (aksi halde ilk tetikte raycast
+    // eski matrise düşer -> "yandan çıkan mermi" hissi).
+    this.camera.updateMatrixWorld();
+
     this.camera.getWorldDirection(this._scratchShotDir);
     this._scratchShotOrigin.copy(this.camera.position);
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
@@ -856,7 +856,15 @@ export class GameEngine {
       direction: { x: this._scratchShotDir.x, y: this._scratchShotDir.y, z: this._scratchShotDir.z },
       weaponId: weapon.id,
     });
-    this.spawnTracer(this._scratchShotOrigin, this._scratchShotDir);
+    // Tracer'ı kamera merkezinden değil, HUD silahının ekrandaki konumundan
+    // (sağ-alt) başlat: strafe (A/D) sırasında mermi karakterin YANINDAN
+    // değil, silahın namlusundan çıkıyormuş gibi görünsün.
+    this._scratchRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const muzzle = this._scratchShotOrigin.clone()
+      .addScaledVector(this._scratchShotDir, 0.55)
+      .addScaledVector(this._scratchRight, 0.28)
+      .add(new THREE.Vector3(0, -0.22, 0));
+    this.spawnTracer(muzzle, this._scratchShotDir);
 
     // TEPMEYİ KAMERA DEĞİL SİLAH ALIR:
     // Eskiden `this.pitch += vert` ile kamera yukarı savruluyordu — CS 2'de olduğu
