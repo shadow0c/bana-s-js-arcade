@@ -16,6 +16,7 @@ import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
 import { PhysicalReflectiveFloor } from './reflectiveFloor';
 import { EditorBridgeClient } from './editorBridgeClient';
+import { InstancedBulletHoles } from './decals';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
@@ -23,6 +24,7 @@ export interface GameEngineCallbacks {
   onDeath: (killerId: string, victimId: string, weaponId: string) => void;
   onStateChange: (state: PlayerState) => void;
   onFlash?: (duration: number) => void;
+  onWeaponKick?: (amount: number) => void;
 }
 
 interface Grenade {
@@ -127,7 +129,7 @@ export class GameEngine {
   private colliders: THREE.Box3[] = [];
   private wallMeshes: THREE.Mesh[] = [];
   private editorBridge: EditorBridgeClient | null = null;
-  private bulletHoles: THREE.Mesh[] = [];
+  private bulletHolesInstanced: InstancedBulletHoles | null = null;
   private grenades: Grenade[] = [];
 
   // Vuruş (raycast) hedef önbelleği — her atışta yeniden kurulmak yerine
@@ -698,8 +700,9 @@ export class GameEngine {
 
     // Sahnede kalan her şeyi (duvarlar, zemin, kurşun delikleri, mermi izleri,
     // granatlar, uzak oyuncu modelleri) GPU belleğinden serbest bırak.
+    this.bulletHolesInstanced?.dispose(this.scene);
+    this.bulletHolesInstanced = null;
     disposeObject3D(this.scene);
-    this.bulletHoles = [];
     this.tracers = [];
     this.grenades = [];
     this.remotePlayers.clear();
@@ -740,24 +743,11 @@ export class GameEngine {
     this.broadcastStateIfNeeded(now);
   }
 
-  private updateRecoilRecovery(dt: number, now: number) {
-    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir.
-    // ÖNEMLİ: Eskiden `if (this.isShooting) return;` burada vardı — bu, düşük ateş
-    // hızlı silahlarda (sniper/pistol) tetik basılı tutulduğu sürece (fireRate
-    // beklemesi sırasında bile) toparlanmayı tamamen durduruyordu; kamera, atışlar
-    // arasında hiç yerleşmeden yukarı sürükleniyordu. Doğru koşul sadece "son atıştan
-    // bu yana yeterince zaman geçti mi" olmalı.
-    if (now - this.lastShotTime < 60) return;
-    const recover = Math.min(1, dt * 8);
-    const dp = this.recoilPitch * recover;
-    const dy = this.recoilYaw * recover;
-    this.pitch -= dp; this.recoilPitch -= dp;
-    this.yaw -= dy; this.recoilYaw -= dy;
-    this.camera.rotation.x = this.pitch;
-    this.camera.rotation.y = this.yaw;
-    if (Math.abs(this.recoilPitch) < 0.001) this.recoilPitch = 0;
-    if (Math.abs(this.recoilYaw) < 0.001) this.recoilYaw = 0;
-    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) this.consecutiveShots = 0;
+  private updateRecoilRecovery(_dt: number, now: number) {
+    // Kamera artık tepmiyor (tepme silahta) — sadece ardışık atış sayacını sıfırla.
+    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) {
+      this.consecutiveShots = 0;
+    }
   }
 
   private updateMovement(dt: number) {
@@ -835,12 +825,12 @@ export class GameEngine {
     this.state.ammo--;
     gameAudio.shoot(weapon.id);
 
-    // ÖNEMLİ SIRALAMA DÜZELTMESİ:
-    // Eskiden recoil (tepme) kameraya UYGULANDIKTAN sonra raycast yapılıyordu —
-    // yani her mermi, kendi ürettiği tepmeden etkilenerek nişan noktasından
-    // sapmış bir yönde ateş ediyordu. Doğrusu: bu atışın isabetini MEVCUT
-    // (henüz tepmemiş) kamera yönelimiyle hesapla, tepmeyi SONRA uygula —
-    // tepme bir sonraki atışı ve görsel geri bildirimi etkilesin.
+    // Fare/dokunmatik tetik ANLIK bir olaydır — frame update() dışında da çağrılır.
+    // camera.position/rotation henüz o karede değişmemiş olsa bile matrixWorld'ün
+    // GÜNCEL olduğundan burada da emin oluyoruz (aksi halde ilk tetikte raycast
+    // eski matrise düşer -> "yandan çıkan mermi" hissi).
+    this.camera.updateMatrixWorld();
+
     this.camera.getWorldDirection(this._scratchShotDir);
     this._scratchShotOrigin.copy(this.camera.position);
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
@@ -866,50 +856,37 @@ export class GameEngine {
       direction: { x: this._scratchShotDir.x, y: this._scratchShotDir.y, z: this._scratchShotDir.z },
       weaponId: weapon.id,
     });
-    this.spawnTracer(this._scratchShotOrigin, this._scratchShotDir);
+    // Tracer'ı kamera merkezinden değil, HUD silahının ekrandaki konumundan
+    // (sağ-alt) başlat: strafe (A/D) sırasında mermi karakterin YANINDAN
+    // değil, silahın namlusundan çıkıyormuş gibi görünsün.
+    this._scratchRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const muzzle = this._scratchShotOrigin.clone()
+      .addScaledVector(this._scratchShotDir, 0.55)
+      .addScaledVector(this._scratchRight, 0.28)
+      .add(new THREE.Vector3(0, -0.22, 0));
+    this.spawnTracer(muzzle, this._scratchShotDir);
 
-    // Tepmeyi raycast'ten SONRA uygula.
-    // Ateş hızlı geldikçe birikim artar
+    // TEPMEYİ KAMERA DEĞİL SİLAH ALIR:
+    // Eskiden `this.pitch += vert` ile kamera yukarı savruluyordu — CS 2'de olduğu
+    // gibi silah tepiyor, nişan noktası "tam olarak baktığın yerde" kalıyor. HUD
+    // silah görselini `weaponKickRef` ile yukarı-geri ittirip yumuşakça çürütür.
     if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
     else this.consecutiveShots = 1;
     const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
-    // Scope yaparken tepme yarıya iner
-    const scopeMul = this.isScoped ? 0.5 : 1;
-
-    const vert = weapon.recoil * buildUp * scopeMul;
-    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
-    this.recoilPitch += vert;
-    this.recoilYaw += horiz;
-    this.pitch += vert;
-    this.yaw += horiz;
-    this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
-    this.camera.rotation.x = this.pitch;
-    this.camera.rotation.y = this.yaw;
+    const scopeMul = this.isScoped ? 0.4 : 1;
+    const kick = Math.min(1, (weapon.recoil * 8) * buildUp * scopeMul);
+    this.callbacks.onWeaponKick?.(kick);
   }
 
   private addBulletHole(point: THREE.Vector3, normal: THREE.Vector3, target: THREE.Object3D) {
-    // O şekli — ring geometry
-    const ringGeo = new THREE.RingGeometry(0.05, 0.09, 20);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide, transparent: true, opacity: 0.95 });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    // Convert normal to world space
-    const worldNormal = normal.clone().transformDirection(target.matrixWorld).normalize();
-    ring.position.copy(point).add(worldNormal.clone().multiplyScalar(0.01));
-    // orient ring to face along normal
-    const up = new THREE.Vector3(0, 0, 1);
-    const q = new THREE.Quaternion().setFromUnitVectors(up, worldNormal);
-    ring.quaternion.copy(q);
-    this.scene.add(ring);
-    this.bulletHoles.push(ring);
-    // limit — kapasite dolunca en eskisini hem sahneden hem GPU belleğinden kaldır
-    if (this.bulletHoles.length > 120) {
-      const old = this.bulletHoles.shift();
-      if (old) {
-        this.scene.remove(old);
-        disposeObject3D(old);
-      }
+    // GPU-instanced crater decal (bkz. decals.ts) — düz "O" halka yerine
+    // normal-map'li gerçekçi çukur/yanık izi. Tüm delikler tek draw call.
+    if (!this.bulletHolesInstanced) {
+      this.bulletHolesInstanced = new InstancedBulletHoles(this.scene, 200);
     }
+    this.bulletHolesInstanced.spawn(point, normal, target);
   }
+
 
   private spawnTracer(origin: THREE.Vector3, direction: THREE.Vector3) {
     const start = origin.clone().add(direction.clone().multiplyScalar(0.4));

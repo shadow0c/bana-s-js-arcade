@@ -19,6 +19,7 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const networkRef = useRef<GameNetwork | null>(null);
+  const weaponKickRef = useRef(0);
   const isMobile = useIsMobile();
 
   const [playerName, setPlayerName] = useState('');
@@ -82,6 +83,7 @@ export function GameCanvas() {
         networkRef.current?.sendState(state);
       },
       onFlash: (duration) => triggerFlash(duration),
+      onWeaponKick: (amount) => { weaponKickRef.current = Math.min(1, weaponKickRef.current + amount); },
     });
     engineRef.current = engine;
 
@@ -256,7 +258,7 @@ export function GameCanvas() {
         />
       )}
 
-      <GameHUD state={localState} remoteStates={remoteStates} killFeed={killFeed} showBuy={showBuy} onBuy={handleBuy} onCloseBuy={() => { setShowBuy(false); if (!isMobile && !engineRef.current?.getState().isDead) engineRef.current?.lockPointer(); }} />
+      <GameHUD state={localState} remoteStates={remoteStates} killFeed={killFeed} showBuy={showBuy} onBuy={handleBuy} weaponKickRef={weaponKickRef} onCloseBuy={() => { setShowBuy(false); if (!isMobile && !engineRef.current?.getState().isDead) engineRef.current?.lockPointer(); }} />
 
       {started && isMobile && (
         <MobileControls

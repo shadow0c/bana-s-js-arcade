@@ -27,6 +27,14 @@ export function MobileControls(props: MobileControlsProps) {
   const joyCenter = useRef<{ x: number; y: number } | null>(null);
   const lookLast = useRef<{ x: number; y: number } | null>(null);
 
+  // KRİTİK: Props her renderda yeni referans olduğu için önceki sürümde
+  // `useEffect(..., [props])` ~20Hz `setLocalState` yüzünden sürekli teardown/
+  // re-attach yapıyordu. Touchstart ile touchmove arasında re-render olursa
+  // dinleyiciler kayboluyor, joystick "takılı" gibi görünüyordu.
+  // Çözüm: propsRef ile stable [] deps.
+  const propsRef = useRef(props);
+  propsRef.current = props;
+
   useEffect(() => {
     const root = rootRef.current;
     const knob = knobRef.current;
@@ -43,7 +51,6 @@ export function MobileControls(props: MobileControlsProps) {
         if (isButton(t.target)) continue;
         const half = window.innerWidth / 2;
         if (t.clientX < half && joyTouchId.current === null) {
-          // JOYSTICK
           joyTouchId.current = t.identifier;
           joyCenter.current = { x: t.clientX, y: t.clientY };
           base.style.left = `${t.clientX}px`;
@@ -51,7 +58,6 @@ export function MobileControls(props: MobileControlsProps) {
           base.style.opacity = '1';
           knob.style.transform = `translate(-50%, -50%)`;
         } else if (t.clientX >= half && lookTouchId.current === null) {
-          // LOOK
           lookTouchId.current = t.identifier;
           lookLast.current = { x: t.clientX, y: t.clientY };
         }
@@ -67,12 +73,12 @@ export function MobileControls(props: MobileControlsProps) {
           const len = Math.hypot(dx, dy);
           if (len > RADIUS) { dx = (dx / len) * RADIUS; dy = (dy / len) * RADIUS; }
           knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-          props.onMove(dx / RADIUS, dy / RADIUS);
+          propsRef.current.onMove(dx / RADIUS, dy / RADIUS);
         } else if (t.identifier === lookTouchId.current && lookLast.current) {
           const dx = t.clientX - lookLast.current.x;
           const dy = t.clientY - lookLast.current.y;
           lookLast.current = { x: t.clientX, y: t.clientY };
-          props.onLook(dx * 4, dy * 4);
+          propsRef.current.onLook(dx * 4, dy * 4);
         }
       }
       e.preventDefault();
@@ -83,7 +89,7 @@ export function MobileControls(props: MobileControlsProps) {
         if (t.identifier === joyTouchId.current) {
           joyTouchId.current = null;
           joyCenter.current = null;
-          props.onMove(0, 0);
+          propsRef.current.onMove(0, 0);
           knob.style.transform = 'translate(-50%, -50%)';
           base.style.opacity = '0';
         } else if (t.identifier === lookTouchId.current) {
@@ -103,7 +109,8 @@ export function MobileControls(props: MobileControlsProps) {
       root.removeEventListener('touchend', onEnd);
       root.removeEventListener('touchcancel', onEnd);
     };
-  }, [props]);
+     
+  }, []);
 
   const btn =
     'select-none rounded-full bg-black/55 backdrop-blur text-white font-bold text-[10px] flex items-center justify-center border border-white/25 active:bg-white/20 pointer-events-auto touch-none';
