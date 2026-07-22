@@ -129,7 +129,7 @@ export class GameEngine {
   private colliders: THREE.Box3[] = [];
   private wallMeshes: THREE.Mesh[] = [];
   private editorBridge: EditorBridgeClient | null = null;
-  private bulletHoles: THREE.Mesh[] = [];
+  private bulletHolesInstanced: InstancedBulletHoles | null = null;
   private grenades: Grenade[] = [];
 
   // Vuruş (raycast) hedef önbelleği — her atışta yeniden kurulmak yerine
