@@ -27,8 +27,9 @@ interface GameHUDProps {
   weaponKickRef?: MutableRefObject<number>;
 }
 
-export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onCloseBuy }: GameHUDProps) {
+export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onCloseBuy, weaponKickRef }: GameHUDProps) {
   const [showScores, setShowScores] = useState(false);
+  const weaponImgRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -48,6 +49,34 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
     };
   }, []);
 
+  // Silah tepmesi (kamera değil, SILAH tepiyor). Engine `weaponKickRef.current`'i
+  // her atışta yükseltir; burada RAF ile silah görselini yukarı+geriye
+  // ittirip yumuşakça çürütüyoruz.
+  useEffect(() => {
+    if (!weaponKickRef) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const k = weaponKickRef.current;
+      const img = weaponImgRef.current;
+      if (img) {
+        const ty = -k * 34; // yukarı kick
+        const rot = -k * 10; // hafif geri yatma
+        const tx = k * 6; // yana savrulma
+        img.style.transform = `translate(${tx}px, ${ty}px) rotate(${rot}deg)`;
+      }
+      // ~10 kat/saniye yumuşak sönümleme
+      weaponKickRef.current = k * Math.pow(0.001, dt);
+      if (weaponKickRef.current < 0.001) weaponKickRef.current = 0;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [weaponKickRef]);
+
   if (!state) return null;
 
   const all = [state, ...Object.values(remoteStates)];
@@ -59,46 +88,33 @@ export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onClose
       {/* Crosshair (+) with center gap */}
       {!state.isDead && (
         <div className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2">
-          {/* dot */}
           <div className="absolute left-1/2 top-1/2 h-[2px] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-emerald-400" />
-          {/* top */}
           <div className="absolute left-1/2 top-0 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
-          {/* bottom */}
           <div className="absolute bottom-0 left-1/2 h-[7px] w-[2px] -translate-x-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
-          {/* left */}
           <div className="absolute left-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
-          {/* right */}
           <div className="absolute right-0 top-1/2 h-[2px] w-[7px] -translate-y-1/2 bg-emerald-400 shadow-[0_0_2px_rgba(0,0,0,0.9)]" />
         </div>
       )}
 
-      {/* Weapon viewmodel with two-hand grip */}
+      {/* Silah viewmodel — sadece silah, el overlay'i kaldırıldı. */}
       {WEAPON_IMG[state.weaponId] && !state.isDead && (
         <div
-          className="pointer-events-none absolute bottom-16 right-2 flex items-end sm:bottom-20 sm:right-6"
-          style={{ transform: state.isScoped ? 'translateY(140%)' : 'none', transition: 'transform 120ms' }}
+          className="pointer-events-none absolute bottom-16 right-2 sm:bottom-20 sm:right-6"
+          style={{
+            transform: state.isScoped ? 'translateY(140%)' : 'none',
+            transition: 'transform 120ms',
+          }}
         >
-          <div className="relative">
-            <img
-              src={WEAPON_IMG[state.weaponId]}
-              alt={WEAPONS[state.weaponId]?.name}
-              className="relative z-10 h-44 w-auto select-none drop-shadow-2xl sm:h-60"
-            />
-            {/* Front (support) hand — gloved, grips the barrel */}
-            <div className="absolute bottom-4 left-6 z-20 h-14 w-10 rotate-[18deg] rounded-t-full rounded-b-md bg-gradient-to-b from-neutral-800 via-neutral-900 to-black shadow-[inset_-4px_-2px_6px_rgba(0,0,0,0.6),0_4px_10px_rgba(0,0,0,0.7)] sm:bottom-6 sm:left-10 sm:h-20 sm:w-14">
-              <div className="absolute inset-x-1 top-2 h-1 rounded bg-white/5" />
-              <div className="absolute inset-x-1 top-5 h-1 rounded bg-white/5" />
-            </div>
-            {/* Rear (trigger) hand + forearm sleeve */}
-            <div className="absolute -bottom-3 right-6 z-20 h-16 w-11 -rotate-[10deg] rounded-t-full rounded-b-md bg-gradient-to-b from-neutral-800 via-neutral-900 to-black shadow-[inset_-4px_-2px_6px_rgba(0,0,0,0.6),0_4px_10px_rgba(0,0,0,0.7)] sm:-bottom-4 sm:right-10 sm:h-24 sm:w-16">
-              <div className="absolute inset-x-1 top-2 h-1 rounded bg-white/5" />
-              <div className="absolute inset-x-1 top-5 h-1 rounded bg-white/5" />
-            </div>
-            {/* Sleeve behind rear hand */}
-            <div className="absolute -bottom-8 right-2 z-0 h-10 w-24 rotate-[8deg] rounded-md bg-gradient-to-r from-neutral-950 via-neutral-800 to-neutral-950 sm:-bottom-10 sm:right-4 sm:h-14 sm:w-32" />
-          </div>
+          <img
+            ref={weaponImgRef}
+            src={WEAPON_IMG[state.weaponId]}
+            alt={WEAPONS[state.weaponId]?.name}
+            className="h-44 w-auto select-none drop-shadow-2xl sm:h-60"
+            style={{ transformOrigin: '80% 100%', willChange: 'transform' }}
+          />
         </div>
       )}
+
 
 
       {/* Bottom HUD */}
