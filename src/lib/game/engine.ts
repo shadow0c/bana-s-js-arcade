@@ -743,24 +743,11 @@ export class GameEngine {
     this.broadcastStateIfNeeded(now);
   }
 
-  private updateRecoilRecovery(dt: number, now: number) {
-    // Ateş bittikten kısa süre sonra kamerayı yumuşakça geri getir.
-    // ÖNEMLİ: Eskiden `if (this.isShooting) return;` burada vardı — bu, düşük ateş
-    // hızlı silahlarda (sniper/pistol) tetik basılı tutulduğu sürece (fireRate
-    // beklemesi sırasında bile) toparlanmayı tamamen durduruyordu; kamera, atışlar
-    // arasında hiç yerleşmeden yukarı sürükleniyordu. Doğru koşul sadece "son atıştan
-    // bu yana yeterince zaman geçti mi" olmalı.
-    if (now - this.lastShotTime < 60) return;
-    const recover = Math.min(1, dt * 8);
-    const dp = this.recoilPitch * recover;
-    const dy = this.recoilYaw * recover;
-    this.pitch -= dp; this.recoilPitch -= dp;
-    this.yaw -= dy; this.recoilYaw -= dy;
-    this.camera.rotation.x = this.pitch;
-    this.camera.rotation.y = this.yaw;
-    if (Math.abs(this.recoilPitch) < 0.001) this.recoilPitch = 0;
-    if (Math.abs(this.recoilYaw) < 0.001) this.recoilYaw = 0;
-    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) this.consecutiveShots = 0;
+  private updateRecoilRecovery(_dt: number, now: number) {
+    // Kamera artık tepmiyor (tepme silahta) — sadece ardışık atış sayacını sıfırla.
+    if (!this.isShooting && this.consecutiveShots > 0 && now - this.lastShotTime > 300) {
+      this.consecutiveShots = 0;
+    }
   }
 
   private updateMovement(dt: number) {
