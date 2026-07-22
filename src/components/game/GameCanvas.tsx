@@ -82,6 +82,7 @@ export function GameCanvas() {
         networkRef.current?.sendState(state);
       },
       onFlash: (duration) => triggerFlash(duration),
+      onWeaponKick: (amount) => { weaponKickRef.current = Math.min(1, weaponKickRef.current + amount); },
     });
     engineRef.current = engine;
 
