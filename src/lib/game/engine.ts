@@ -871,23 +871,16 @@ export class GameEngine {
     });
     this.spawnTracer(this._scratchShotOrigin, this._scratchShotDir);
 
-    // Tepmeyi raycast'ten SONRA uygula.
-    // Ateş hızlı geldikçe birikim artar
+    // TEPMEYİ KAMERA DEĞİL SİLAH ALIR:
+    // Eskiden `this.pitch += vert` ile kamera yukarı savruluyordu — CS 2'de olduğu
+    // gibi silah tepiyor, nişan noktası "tam olarak baktığın yerde" kalıyor. HUD
+    // silah görselini `weaponKickRef` ile yukarı-geri ittirip yumuşakça çürütür.
     if (this.lastFireGap < weapon.fireRate * 3) this.consecutiveShots++;
     else this.consecutiveShots = 1;
     const buildUp = 1 + Math.min(4, this.consecutiveShots * 0.35);
-    // Scope yaparken tepme yarıya iner
-    const scopeMul = this.isScoped ? 0.5 : 1;
-
-    const vert = weapon.recoil * buildUp * scopeMul;
-    const horiz = weapon.recoil * 0.4 * (Math.random() - 0.5) * buildUp * scopeMul;
-    this.recoilPitch += vert;
-    this.recoilYaw += horiz;
-    this.pitch += vert;
-    this.yaw += horiz;
-    this.pitch = Math.min(Math.PI / 2 - 0.01, this.pitch);
-    this.camera.rotation.x = this.pitch;
-    this.camera.rotation.y = this.yaw;
+    const scopeMul = this.isScoped ? 0.4 : 1;
+    const kick = Math.min(1, (weapon.recoil * 8) * buildUp * scopeMul);
+    this.callbacks.onWeaponKick?.(kick);
   }
 
   private addBulletHole(point: THREE.Vector3, normal: THREE.Vector3, target: THREE.Object3D) {
