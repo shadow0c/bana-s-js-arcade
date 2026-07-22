@@ -16,6 +16,7 @@ import type { PlayerState, RemotePlayer, Team, Vector3Like } from './types';
 import { gameAudio } from './audio';
 import { PhysicalReflectiveFloor } from './reflectiveFloor';
 import { EditorBridgeClient } from './editorBridgeClient';
+import { InstancedBulletHoles } from './decals';
 
 export interface GameEngineCallbacks {
   onShoot: (event: { origin: Vector3Like; direction: Vector3Like; weaponId: string }) => void;
