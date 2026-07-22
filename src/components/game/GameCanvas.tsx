@@ -19,6 +19,7 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const networkRef = useRef<GameNetwork | null>(null);
+  const weaponKickRef = useRef(0);
   const isMobile = useIsMobile();
 
   const [playerName, setPlayerName] = useState('');
