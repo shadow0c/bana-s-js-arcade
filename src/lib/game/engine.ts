@@ -24,6 +24,7 @@ export interface GameEngineCallbacks {
   onDeath: (killerId: string, victimId: string, weaponId: string) => void;
   onStateChange: (state: PlayerState) => void;
   onFlash?: (duration: number) => void;
+  onWeaponKick?: (amount: number) => void;
 }
 
 interface Grenade {
