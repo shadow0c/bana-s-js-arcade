@@ -24,6 +24,7 @@ interface GameHUDProps {
   showBuy: boolean;
   onBuy: (weaponId: string) => void;
   onCloseBuy?: () => void;
+  weaponKickRef?: MutableRefObject<number>;
 }
 
 export function GameHUD({ state, remoteStates, killFeed, showBuy, onBuy, onCloseBuy }: GameHUDProps) {
