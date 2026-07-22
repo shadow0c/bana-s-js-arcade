@@ -700,8 +700,9 @@ export class GameEngine {
 
     // Sahnede kalan her şeyi (duvarlar, zemin, kurşun delikleri, mermi izleri,
     // granatlar, uzak oyuncu modelleri) GPU belleğinden serbest bırak.
+    this.bulletHolesInstanced?.dispose(this.scene);
+    this.bulletHolesInstanced = null;
     disposeObject3D(this.scene);
-    this.bulletHoles = [];
     this.tracers = [];
     this.grenades = [];
     this.remotePlayers.clear();
