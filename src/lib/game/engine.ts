@@ -218,6 +218,12 @@ export class GameEngine {
 
     this.editorBridge = new EditorBridgeClient(
       url,
+      // MAP_WALLS'ta `y` alanı yok — bu oyundaki tüm duvarlar zeminde (y=0)
+      // durur ve yükseklikleri `h` ile yukarı doğru uzanır (bkz. setupScene:
+      // mesh.position.set(box.x, box.h/2, box.z) — merkezi h/2'de, TABANI y=0'da).
+      // EditorBridgeClient köprü protokolü genel (herhangi bir oyunun duvarları
+      // zeminde başlamayabilir) olduğu için `y` alanını zorunlu tutuyor; burada
+      // bu oyuna özgü sabiti (taban=0) açıkça haritalıyoruz.
       () => MAP_WALLS.map((w) => ({ ...w, y: 0 })),
       (index, transform) => {
         // [LOGIC ERROR FIX] wallMeshes[0] zemin (floor) mesh'idir (MAP_WALLS
@@ -714,6 +720,17 @@ export class GameEngine {
   private update(dt: number, now: number) {
     if (this.state.isDead) return;
     this.updateMovement(dt);
+    // KRİTİK DÜZELTME: camera.position/rotation bu karede zaten değişmiş
+    // olabilir (updateMovement veya mouse-look), ama three.js
+    // camera.matrixWorld'ü yalnızca renderer.render() -> scene.updateMatrixWorld()
+    // içinde günceller — bu ise update()'ten (dolayısıyla updateShooting()/
+    // tryShoot()'tan) SONRA çalışır. Bu satır olmadan, tryShoot() içindeki
+    // raycaster.setFromCamera()/camera.getWorldDirection() HÂLÂ ÖNCEKİ
+    // karenin matrisini okur. Durağanken pozisyon değişmediği için fark
+    // edilmez; yana/ileri hareket ederken (strafe) mermi bir önceki karede
+    // bulunduğun konumdan çıkar — "yan yürürken ateş edince mermi karakterin
+    // olduğu yerden değil yandan çıkıyor" hatasının tam kök nedeni budur.
+    this.camera.updateMatrixWorld();
     this.updateShooting(now);
     this.updateReload(now);
     this.updateRecoilRecovery(dt, now);
@@ -1252,4 +1269,4 @@ export class GameEngine {
       this.lastBroadcastTime = now;
     }
   }
-  }
+        }
