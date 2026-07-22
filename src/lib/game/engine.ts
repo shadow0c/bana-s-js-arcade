@@ -891,28 +891,14 @@ export class GameEngine {
   }
 
   private addBulletHole(point: THREE.Vector3, normal: THREE.Vector3, target: THREE.Object3D) {
-    // O şekli — ring geometry
-    const ringGeo = new THREE.RingGeometry(0.05, 0.09, 20);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide, transparent: true, opacity: 0.95 });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    // Convert normal to world space
-    const worldNormal = normal.clone().transformDirection(target.matrixWorld).normalize();
-    ring.position.copy(point).add(worldNormal.clone().multiplyScalar(0.01));
-    // orient ring to face along normal
-    const up = new THREE.Vector3(0, 0, 1);
-    const q = new THREE.Quaternion().setFromUnitVectors(up, worldNormal);
-    ring.quaternion.copy(q);
-    this.scene.add(ring);
-    this.bulletHoles.push(ring);
-    // limit — kapasite dolunca en eskisini hem sahneden hem GPU belleğinden kaldır
-    if (this.bulletHoles.length > 120) {
-      const old = this.bulletHoles.shift();
-      if (old) {
-        this.scene.remove(old);
-        disposeObject3D(old);
-      }
+    // GPU-instanced crater decal (bkz. decals.ts) — düz "O" halka yerine
+    // normal-map'li gerçekçi çukur/yanık izi. Tüm delikler tek draw call.
+    if (!this.bulletHolesInstanced) {
+      this.bulletHolesInstanced = new InstancedBulletHoles(this.scene, 200);
     }
+    this.bulletHolesInstanced.spawn(point, normal, target);
   }
+
 
   private spawnTracer(origin: THREE.Vector3, direction: THREE.Vector3) {
     const start = origin.clone().add(direction.clone().multiplyScalar(0.4));
