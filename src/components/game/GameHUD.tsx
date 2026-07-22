@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { WEAPONS } from '@/lib/game/constants';
 import type { PlayerState, KillFeedEntry } from '@/lib/game/types';
 import akImg from '@/assets/weapons/ak47.png';
